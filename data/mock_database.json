@@ -1,0 +1,69 @@
+{
+  "verified_registry": [
+    {
+      "document_type": "AADHAAR",
+      "document_number": "367598346125",
+      "full_name": "Aarav Sharma",
+      "dob": "1994-08-14",
+      "gender": "M",
+      "state": "Uttar Pradesh",
+      "status": "VALID_ACTIVE"
+    },
+    {
+      "document_type": "PASSPORT",
+      "document_number": "Z2098451",
+      "full_name": "Priya Patel",
+      "dob": "1991-03-22",
+      "gender": "F",
+      "nationality": "IND",
+      "expiry_date": "2031-03-21",
+      "status": "VALID_ACTIVE"
+    },
+    {
+      "document_type": "PAN",
+      "document_number": "ABCDE1234F",
+      "full_name": "Rohan Verma",
+      "dob": "1988-11-05",
+      "gender": "M",
+      "status": "VALID_ACTIVE"
+    }
+  ],
+  "stolen_or_lost": [
+    {
+      "document_type": "PASSPORT",
+      "document_number": "M1234567",
+      "reported_date": "2024-01-15",
+      "reported_by": "Ramesh Gupta",
+      "reason": "Reported stolen at Kathmandu transit hub"
+    },
+    {
+      "document_type": "AADHAAR",
+      "document_number": "999988887777",
+      "reported_date": "2024-05-10",
+      "reported_by": "Vikram Singh",
+      "reason": "Reported lost at Raxaul border crossing"
+    }
+  ],
+  "watchlist": [
+    {
+      "watchlist_id": "LOC-SSB-2025-089",
+      "name": "Tariq Khan",
+      "alias": ["Tariq Ahmed", "Tariq Bhai"],
+      "document_numbers": ["Z9999999", "555544443333"],
+      "category": "BORDER_INFILTRATION_ALERT",
+      "severity": "HIGH",
+      "issuing_agency": "Sashastra Seema Bal Intelligence Wing",
+      "instructions": "Detain immediately and notify duty border officer"
+    },
+    {
+      "watchlist_id": "LOC-MHA-2024-412",
+      "name": "David Miller",
+      "alias": ["Dave Mills"],
+      "document_numbers": ["P8822114"],
+      "category": "FINANCIAL_FRAUD_LOOKOUT",
+      "severity": "MEDIUM",
+      "issuing_agency": "Enforcement Directorate",
+      "instructions": "Secondary inspection mandatory. Hold passport"
+    }
+  ]
+}

@@ -45,6 +45,8 @@ RUN pip install --no-cache-dir -r ./backend/requirements.txt
 
 # Copy backend code, models, and sample data
 COPY backend/ ./backend/
+COPY models_weights/ ./models_weights/
+COPY data/ ./data/
 COPY sample_data/ ./sample_data/
 
 # Copy compiled frontend from Stage 1 into frontend/dist

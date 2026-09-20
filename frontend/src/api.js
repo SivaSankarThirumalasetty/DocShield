@@ -22,8 +22,19 @@ export async function analyzeDocument(docFile, personFile = null, docTypeHint = 
   });
 
   if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.detail || `Server error: ${res.statusText}`);
+    let msg = "Verification service error. Please try again.";
+    try {
+      const errData = await res.json();
+      if (errData && errData.detail) {
+        msg = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+      }
+    } catch (_) {
+      try {
+        const text = await res.text();
+        if (text) msg = `Verification service error: ${text}`;
+      } catch (__) {}
+    }
+    throw new Error(msg);
   }
 
   return res.json();
