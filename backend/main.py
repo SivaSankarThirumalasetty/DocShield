@@ -5,29 +5,54 @@ from typing import Optional, List
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from .models.schemas import (
-    HealthResponse,
-    ScreeningResult,
-    FaceVerifyResponse,
-    CaseSummary,
-    OfficerReview,
-    OfficerReviewRequest
-)
-from .utils.image_utils import (
-    bytes_to_cv2,
-    cv2_to_pil,
-    cv2_to_base64,
-    deskew,
-    resize_if_larger
-)
-from .services.ocr_service import ocr_service
-from .services.document_parser import document_parser
-from .services.validation_service import validation_service
-from .services.mock_database import db_service
-from .services.tampering_service import tampering_service
-from .services.face_service import face_service
-from .services.risk_engine import risk_engine
-from .services.report_service import report_service
+try:
+    from .models.schemas import (
+        HealthResponse,
+        ScreeningResult,
+        FaceVerifyResponse,
+        CaseSummary,
+        OfficerReview,
+        OfficerReviewRequest
+    )
+    from .utils.image_utils import (
+        bytes_to_cv2,
+        cv2_to_pil,
+        cv2_to_base64,
+        deskew,
+        resize_if_larger
+    )
+    from .services.ocr_service import ocr_service
+    from .services.document_parser import document_parser
+    from .services.validation_service import validation_service
+    from .services.mock_database import db_service
+    from .services.tampering_service import tampering_service
+    from .services.face_service import face_service
+    from .services.risk_engine import risk_engine
+    from .services.report_service import report_service
+except ImportError:
+    from models.schemas import (
+        HealthResponse,
+        ScreeningResult,
+        FaceVerifyResponse,
+        CaseSummary,
+        OfficerReview,
+        OfficerReviewRequest
+    )
+    from utils.image_utils import (
+        bytes_to_cv2,
+        cv2_to_pil,
+        cv2_to_base64,
+        deskew,
+        resize_if_larger
+    )
+    from services.ocr_service import ocr_service
+    from services.document_parser import document_parser
+    from services.validation_service import validation_service
+    from services.mock_database import db_service
+    from services.tampering_service import tampering_service
+    from services.face_service import face_service
+    from services.risk_engine import risk_engine
+    from services.report_service import report_service
 
 app = FastAPI(
     title="DocShield API",
