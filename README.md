@@ -1,3 +1,13 @@
+---
+title: DocShield
+emoji: 🛡️
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # DocShield: AI-Based Fake Identity & Document Screening System
 **Smart India Hackathon 2026** | **Problem Statement:** SIH26188  
 **Organization:** Ministry of Home Affairs (MHA) | **Department:** Sashastra Seema Bal (SSB)
