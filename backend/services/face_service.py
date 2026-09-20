@@ -61,11 +61,19 @@ class FaceService:
         model_path = weights_dir / "res10_300x300_ssd_iter_140000_fp16.caffemodel"
         if proto_path.exists() and model_path.exists():
             try:
-                self.net = cv2.dnn.readNetFromCaffe(str(proto_path), str(model_path))
-                print(f"[*] Caffe face detector successfully loaded from {weights_dir}")
-            except Exception as e:
-                self.load_error = f"Error reading Caffe model: {str(e)}"
-                print(f"[!] Warning: Could not load Caffe face detector: {e}")
+                # cv2.dnn.readNet(model, config) is the universal OpenCV DNN loader
+                self.net = cv2.dnn.readNet(str(model_path), str(proto_path))
+                print(f"[*] Caffe face detector successfully loaded with cv2.dnn.readNet from {weights_dir}")
+            except Exception as e1:
+                try:
+                    if hasattr(cv2.dnn, 'readNetFromCaffe'):
+                        self.net = cv2.dnn.readNetFromCaffe(str(proto_path), str(model_path))
+                        print(f"[*] Caffe face detector loaded with readNetFromCaffe from {weights_dir}")
+                    else:
+                        raise e1
+                except Exception as e2:
+                    self.load_error = f"Error reading Caffe model: {str(e2)}"
+                    print(f"[!] Warning: Could not load Caffe face detector: {e2}")
         else:
             self.load_error = f"Weights missing at {weights_dir} (proto={proto_path.exists()}, model={model_path.exists()})"
             print(f"[!] Warning: Face detection model weights missing at {weights_dir}")
