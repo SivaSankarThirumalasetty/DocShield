@@ -1,0 +1,38 @@
+[
+  {
+    "scenario": "Valid Aadhaar Card",
+    "document_type": "AADHAAR",
+    "document_number": "367598346125",
+    "name": "Aarav Sharma",
+    "dob": "1994-08-14",
+    "expected_verdict": "CLEARED",
+    "expected_risk": "LOW"
+  },
+  {
+    "scenario": "Fake/Manipulated Aadhaar (Invalid Verhoeff Checksum)",
+    "document_type": "AADHAAR",
+    "document_number": "367598346129",
+    "name": "Aarav Sharma",
+    "dob": "1994-08-14",
+    "expected_verdict": "SECONDARY_INSPECTION",
+    "expected_risk": "MEDIUM"
+  },
+  {
+    "scenario": "Reported Stolen Passport",
+    "document_type": "PASSPORT",
+    "document_number": "M1234567",
+    "name": "Ramesh Gupta",
+    "dob": "1985-02-18",
+    "expected_verdict": "DETENTION_ALERT",
+    "expected_risk": "HIGH"
+  },
+  {
+    "scenario": "SSB Border Watchlist Alert",
+    "document_type": "PASSPORT",
+    "document_number": "Z9999999",
+    "name": "Tariq Khan",
+    "dob": "1980-04-12",
+    "expected_verdict": "DETENTION_ALERT",
+    "expected_risk": "HIGH"
+  }
+]

@@ -1,0 +1,9 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.github
+frontend/node_modules
+reports/*.pdf
+.env
