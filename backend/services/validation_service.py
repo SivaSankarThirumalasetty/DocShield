@@ -3,7 +3,7 @@ from datetime import datetime, date
 from typing import List, Optional, Tuple
 from ..models.schemas import ValidationFlag, ValidationResult, ExtractedFields
 
-# Verhoeff algorithm tables for Aadhaar checksum validation
+# Verhoeff algorithm multiplication and permutation matrices
 VERHOEFF_D = [
     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
     [1, 2, 3, 4, 0, 6, 7, 8, 9, 5],
@@ -38,20 +38,7 @@ def validate_verhoeff(number_str: str) -> bool:
         c = VERHOEFF_D[c][VERHOEFF_P[i % 8][num]]
     return c == 0
 
-def calculate_icao_check_digit(data_str: str) -> str:
-    weights = [7, 3, 1]
-    total = 0
-    for idx, ch in enumerate(data_str.upper()):
-        if ch.isdigit():
-            val = int(ch)
-        elif 'A' <= ch <= 'Z':
-            val = ord(ch) - 55
-        else:
-            val = 0
-        total += val * weights[idx % 3]
-    return str(total % 10)
-
-def parse_date(date_str: Optional[str]) -> Optional[date]:
+def parse_iso_date(date_str: Optional[str]) -> Optional[date]:
     if not date_str:
         return None
     cleaned = date_str.strip().replace('/', '-').replace('.', '-')
@@ -69,139 +56,140 @@ class ValidationService:
         doc_type = (doc_info.document_type or "UNKNOWN").upper()
         doc_num = (doc_info.document_number or "").replace(" ", "").upper()
 
-        # 1. Document Format & Checksum Checks
+        # 1. Document Format & Checksum Verification
         if doc_type == "AADHAAR":
-            digits_only = "".join(c for c in doc_num if c.isdigit())
-            if len(digits_only) == 12:
-                is_verhoeff_valid = validate_verhoeff(digits_only)
+            if doc_num.startswith("XXXX-XXXX-"):
+                # Masked for statutory compliance
                 flags.append(ValidationFlag(
-                    check_name="Verhoeff Checksum",
+                    check_name="Aadhaar Privacy Redaction",
                     field="document_number",
-                    passed=is_verhoeff_valid,
-                    message="Aadhaar 12-digit Verhoeff mathematical checksum verified" if is_verhoeff_valid else "Aadhaar Verhoeff checksum calculation failed (invalid card number structure)",
-                    severity="critical" if not is_verhoeff_valid else "info"
+                    passed=True,
+                    message="Aadhaar first 8 digits redacted per Section 29 Aadhaar Act 2016",
+                    severity="info",
+                    evidence_state="PASS"
                 ))
             else:
-                flags.append(ValidationFlag(
-                    check_name="Digit Length",
-                    field="document_number",
-                    passed=False,
-                    message=f"Aadhaar must contain 12 digits (found {len(digits_only)})",
-                    severity="critical"
-                ))
+                digits_only = "".join(c for c in doc_num if c.isdigit())
+                if len(digits_only) == 12:
+                    is_verhoeff = validate_verhoeff(digits_only)
+                    flags.append(ValidationFlag(
+                        check_name="Verhoeff Checksum",
+                        field="document_number",
+                        passed=is_verhoeff,
+                        message="Aadhaar Verhoeff checksum algorithm verified" if is_verhoeff else "Aadhaar Verhoeff checksum failed: invalid card structure",
+                        severity="info" if is_verhoeff else "critical",
+                        evidence_state="PASS" if is_verhoeff else "FAIL"
+                    ))
+                else:
+                    flags.append(ValidationFlag(
+                        check_name="Digit Length",
+                        field="document_number",
+                        passed=False,
+                        message=f"Aadhaar must contain 12 digits (found {len(digits_only)})",
+                        severity="critical",
+                        evidence_state="FAIL"
+                    ))
 
         elif doc_type == "PAN":
             pan_pattern = r'^[A-Z]{5}[0-9]{4}[A-Z]$'
-            is_match = bool(re.match(pan_pattern, doc_num))
+            is_valid_pan = bool(re.match(pan_pattern, doc_num))
             flags.append(ValidationFlag(
-                check_name="PAN Format Structure",
+                check_name="PAN Syntax Structure",
                 field="document_number",
-                passed=is_match,
-                message="PAN follows standard 10-character alphanumeric syntax (AAAAA9999A)" if is_match else f"PAN '{doc_num}' does not match statutory alphanumeric pattern",
-                severity="critical" if not is_match else "info"
+                passed=is_valid_pan,
+                message="PAN follows standard alphanumeric syntax (AAAAA9999A)" if is_valid_pan else f"PAN '{doc_num}' does not match official syntax",
+                severity="info" if is_valid_pan else "critical",
+                evidence_state="PASS" if is_valid_pan else "FAIL"
             ))
-            if is_match and len(doc_num) == 10:
-                fourth_char = doc_num[3]
-                valid_types = {'P': 'Individual/Person', 'C': 'Company', 'H': 'HUF', 'F': 'Firm', 'A': 'AOP', 'T': 'Trust'}
-                flags.append(ValidationFlag(
-                    check_name="PAN Entity Category",
-                    field="document_number",
-                    passed=fourth_char in valid_types,
-                    message=f"Entity category '{fourth_char}' identified as {valid_types.get(fourth_char, 'Unknown')}",
-                    severity="info" if fourth_char in valid_types else "warning"
-                ))
 
         elif doc_type == "PASSPORT":
-            # Indian Passport format: 1 alphabet followed by 7 digits
-            ppt_pattern = r'^[A-Z][0-9]{7}$'
-            is_match = bool(re.match(ppt_pattern, doc_num))
+            ppt_pattern = r'^[A-Z][0-9]{7,8}$'
+            is_valid_ppt = bool(re.match(ppt_pattern, doc_num))
             flags.append(ValidationFlag(
-                check_name="Passport Number Format",
+                check_name="Passport Number Syntax",
                 field="document_number",
-                passed=is_match,
-                message="Passport number conforms to standard 8-char ICAO/Passport series" if is_match else f"Passport number '{doc_num}' format non-standard",
-                severity="warning" if not is_match else "info"
+                passed=is_valid_ppt,
+                message="Passport number adheres to standard format" if is_valid_ppt else f"Passport number '{doc_num}' deviates from standard syntax",
+                severity="info" if is_valid_ppt else "warning",
+                evidence_state="PASS" if is_valid_ppt else "FAIL"
             ))
 
-            # MRZ ICAO 9303 check digit validations
-            if doc_info.mrz_data:
-                mrz = doc_info.mrz_data
-                doc_num_raw = mrz.get("document_number", "")
-                doc_num_chk = mrz.get("document_number_check", "")
-                if doc_num_raw and doc_num_chk:
-                    expected_chk = calculate_icao_check_digit(doc_num_raw)
-                    chk_passed = (expected_chk == doc_num_chk)
-                    flags.append(ValidationFlag(
-                        check_name="MRZ Doc Number Checksum",
-                        field="mrz_lines",
-                        passed=chk_passed,
-                        message=f"ICAO 9303 document number check digit verified ({doc_num_chk})" if chk_passed else f"MRZ document check digit mismatch (expected {expected_chk}, got {doc_num_chk})",
-                        severity="critical" if not chk_passed else "info"
-                    ))
-
-                dob_raw = "".join(filter(str.isdigit, mrz.get("dob", "")))[-6:]
-                dob_chk = mrz.get("dob_check", "")
-                if dob_raw and dob_chk:
-                    expected_dob_chk = calculate_icao_check_digit(dob_raw)
-                    dob_passed = (expected_dob_chk == dob_chk)
-                    flags.append(ValidationFlag(
-                        check_name="MRZ DOB Checksum",
-                        field="dob",
-                        passed=dob_passed,
-                        message=f"ICAO 9303 date of birth check digit verified" if dob_passed else f"MRZ DOB check digit failed (expected {expected_dob_chk})",
-                        severity="warning" if not dob_passed else "info"
-                    ))
-
-        # 2. Date Sanity Checks
-        today = date.today()
-        if doc_info.dob:
-            parsed_dob = parse_date(doc_info.dob)
-            if parsed_dob:
-                dob_future = parsed_dob > today
-                age = (today - parsed_dob).days // 365
+            # MRZ Checksum verification if MRZ data exists
+            if doc_info.mrz_data and "checksums" in doc_info.mrz_data:
+                chk = doc_info.mrz_data["checksums"]
+                all_chk_valid = chk.get("all_valid", False)
                 flags.append(ValidationFlag(
-                    check_name="DOB Chronology",
-                    field="dob",
-                    passed=not dob_future and (0 <= age <= 115),
-                    message=f"Date of birth verified (Approx. age: {age} years)" if not dob_future else f"Invalid date of birth: date is in the future ({parsed_dob})",
-                    severity="critical" if dob_future else "info"
+                    check_name="ICAO Doc 9303 MRZ Checksums",
+                    field="mrz_lines",
+                    passed=all_chk_valid,
+                    message="All ICAO 7-3-1 check digits verified (doc number, DOB, expiry)" if all_chk_valid else "ICAO 7-3-1 check digit mismatch detected in MRZ zone",
+                    severity="info" if all_chk_valid else "critical",
+                    evidence_state="PASS" if all_chk_valid else "FAIL"
                 ))
-            else:
+
+        else:
+            flags.append(ValidationFlag(
+                check_name="Document Type Recognition",
+                field="document_type",
+                passed=False,
+                message="Unrecognized document layout. Standard check digits cannot be evaluated.",
+                severity="warning",
+                evidence_state="INDETERMINATE"
+            ))
+
+        # 2. Expiration Date Verification
+        exp_date = parse_iso_date(doc_info.expiry_date)
+        if exp_date:
+            today = date.today()
+            is_expired = exp_date < today
+            flags.append(ValidationFlag(
+                check_name="Document Expiration Status",
+                field="expiry_date",
+                passed=not is_expired,
+                message=f"Document expired on {exp_date.isoformat()}" if is_expired else f"Document is valid through {exp_date.isoformat()}",
+                severity="critical" if is_expired else "info",
+                evidence_state="FAIL" if is_expired else "PASS"
+            ))
+        elif doc_type == "PASSPORT":
+            flags.append(ValidationFlag(
+                check_name="Document Expiration Status",
+                field="expiry_date",
+                passed=False,
+                message="Expiry date could not be extracted from passport MRZ.",
+                severity="warning",
+                evidence_state="INDETERMINATE"
+            ))
+
+        # 3. Date of Birth Plausibility
+        dob_date = parse_iso_date(doc_info.dob)
+        if dob_date:
+            today = date.today()
+            if dob_date > today:
                 flags.append(ValidationFlag(
-                    check_name="DOB Format",
+                    check_name="DOB Plausibility",
                     field="dob",
                     passed=False,
-                    message=f"Could not parse DOB format '{doc_info.dob}'",
-                    severity="warning"
+                    message=f"Date of birth ({dob_date.isoformat()}) is in the future.",
+                    severity="critical",
+                    evidence_state="FAIL"
                 ))
-
-        if doc_info.expiry_date:
-            parsed_exp = parse_date(doc_info.expiry_date)
-            if parsed_exp:
-                is_expired = parsed_exp < today
+            else:
+                age_years = (today - dob_date).days // 365
                 flags.append(ValidationFlag(
-                    check_name="Document Expiration Status",
-                    field="expiry_date",
-                    passed=not is_expired,
-                    message="Document is currently valid and unexpired" if not is_expired else f"Document expired on {parsed_exp}",
-                    severity="critical" if is_expired else "info"
+                    check_name="DOB Plausibility",
+                    field="dob",
+                    passed=True,
+                    message=f"Date of birth verified (Calculated age: ~{age_years} years).",
+                    severity="info",
+                    evidence_state="PASS"
                 ))
 
-        # 3. Completeness Checks
-        has_name = bool(doc_info.name and len(doc_info.name.strip()) >= 2)
-        flags.append(ValidationFlag(
-            check_name="Identity Name Integrity",
-            field="name",
-            passed=has_name,
-            message="Holder name extracted successfully" if has_name else "Name missing or unreadable from document scan",
-            severity="warning" if not has_name else "info"
-        ))
-
+        # Calculate overall validity
+        critical_failures = [f for f in flags if not f.passed and f.severity == "critical"]
         passed_count = sum(1 for f in flags if f.passed)
-        critical_failed = any(not f.passed and f.severity == "critical" for f in flags)
 
         return ValidationResult(
-            overall_valid=not critical_failed,
+            overall_valid=len(critical_failures) == 0,
             checks_passed=passed_count,
             checks_total=len(flags),
             checks=flags

@@ -18,7 +18,7 @@ FROM python:3.11-slim
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PORT=7860 \
+    PORT=8000 \
     HOST=0.0.0.0
 
 # Install system dependencies for OpenCV, Tesseract OCR, dlib, and build tools
@@ -51,14 +51,14 @@ COPY sample_data/ ./sample_data/
 
 # Copy compiled frontend from Stage 1 into frontend/dist
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
-COPY sample_data/*.png ./frontend/dist/samples/
+RUN mkdir -p ./frontend/dist/samples && cp sample_data/*.png ./frontend/dist/samples/ 2>/dev/null || true
 
-# Expose port (7860 for Hugging Face Spaces; Render/Railway provide dynamic $PORT)
-EXPOSE 7860
+# Expose default port (Railway/Render provide dynamic $PORT at runtime)
+EXPOSE 8000
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-# Start production Uvicorn server
-CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-7860}"]
+# Start production Uvicorn server dynamically binding to host PORT
+CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

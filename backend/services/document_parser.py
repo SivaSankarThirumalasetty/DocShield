@@ -1,131 +1,232 @@
 import re
-from typing import Dict, Any, Optional, List
+from datetime import datetime
+from typing import Dict, Any, Optional, List, Tuple
 from ..models.schemas import ExtractedFields
+from ..core.security import mask_aadhaar_number
+from ..core.logging import logger
+
+def calculate_icao_check_digit(data_str: str) -> str:
+    """Computes ICAO Doc 9303 modulo 10 checksum with [7, 3, 1] weights."""
+    weights = [7, 3, 1]
+    total = 0
+    for idx, ch in enumerate(data_str.upper()):
+        if ch.isdigit():
+            val = int(ch)
+        elif 'A' <= ch <= 'Z':
+            val = ord(ch) - 55
+        else:
+            val = 0
+        total += val * weights[idx % 3]
+    return str(total % 10)
+
+def validate_icao_date(yymmdd: str) -> Tuple[bool, Optional[str]]:
+    """Validates YYMMDD format and converts to ISO YYYY-MM-DD."""
+    if len(yymmdd) != 6 or not yymmdd.isdigit():
+        return False, None
+    yy = int(yymmdd[0:2])
+    mm = int(yymmdd[2:4])
+    dd = int(yymmdd[4:6])
+
+    if mm < 1 or mm > 12:
+        return False, None
+    if dd < 1 or dd > 31:
+        return False, None
+
+    century = 2000 if yy <= 40 else 1900
+    try:
+        dt = datetime(century + yy, mm, dd)
+        return True, dt.strftime("%Y-%m-%d")
+    except ValueError:
+        return False, None
 
 class DocumentParser:
     def classify_document(self, text: str, hint: Optional[str] = None) -> str:
+        """
+        Conservative document classification.
+        Requires unambiguous anchor tokens; never guesses.
+        """
         if hint and hint.upper() in ["AADHAAR", "PAN", "PASSPORT", "VOTER_ID"]:
             return hint.upper()
 
         lower = text.lower()
-        if any(k in lower for k in ["aadhaar", "uidai", "unique identification", "mera aadhaar"]) or re.search(r'\b\d{4}\s\d{4}\s\d{4}\b', text):
+
+        # 1. Indian Aadhaar Card Anchor Checks
+        has_uidai_term = any(k in lower for k in ["uidai", "unique identification", "mera aadhaar", "aadhaar"])
+        has_aadhaar_pattern = bool(re.search(r'\b\d{4}\s\d{4}\s\d{4}\b', text))
+        if has_uidai_term and (has_aadhaar_pattern or "government of india" in lower or "enrollment" in lower):
             return "AADHAAR"
-        if any(k in lower for k in ["income tax department", "permanent account number", "govt. of india"]) or re.search(r'\b[A-Z]{5}[0-9]{4}[A-Z]\b', text):
+
+        # 2. Indian PAN Card Anchor Checks
+        has_tax_term = any(k in lower for k in ["income tax department", "permanent account number"])
+        has_pan_pattern = bool(re.search(r'\b[A-Z]{5}[0-9]{4}[A-Z]\b', text))
+        if has_tax_term or (has_pan_pattern and "govt. of india" in lower):
             return "PAN"
-        if any(k in lower for k in ["passport", "republic of india", "p<ind", "type/type"]):
+
+        # 3. Passport (ICAO Standard) Anchor Checks
+        has_passport_term = any(k in lower for k in ["passport", "republic of india", "type/type"])
+        has_mrz_line = bool(re.search(r'P<[A-Z]{3}', text.upper())) or "P<IND" in text.upper()
+        if has_passport_term or has_mrz_line:
             return "PASSPORT"
+
+        # 4. Voter ID Anchor Checks
         if any(k in lower for k in ["election commission", "voter identity", "epic"]):
             return "VOTER_ID"
+
+        # Default strictly to UNKNOWN (No reckless guessing)
         return "UNKNOWN"
 
     def _clean_mrz_line(self, line: str) -> str:
         """Corrects common OCR misreads in standard ICAO MRZ lines."""
         cleaned = line.strip().replace(" ", "").upper()
-        # Replace common symbol misreads in MRZ
         for ch in ["(", ")", "{", "}", "[", "]", "=", "«", "»", "*"]:
             cleaned = cleaned.replace(ch, "<")
         if cleaned.startswith("PC") or cleaned.startswith("P(") or cleaned.startswith("P{"):
             cleaned = "P<" + cleaned[2:]
-        # In MRZ filler zones, lowercase or isolated 'c' is often '<'
         cleaned = re.sub(r'(?<=[A-Z0-9])c(?=[A-Z0-9<])', '<', cleaned)
         cleaned = re.sub(r'c{2,}', lambda m: '<' * len(m.group(0)), cleaned)
         return cleaned
 
-    def _parse_icao_mrz(self, mrz_lines: List[str]) -> Optional[Dict[str, Any]]:
-        """Parses ICAO Doc 9303 standard machine-readable zone."""
+    def parse_icao_td3_mrz(self, mrz_lines: List[str]) -> Optional[Dict[str, Any]]:
+        """
+        Parses and validates ICAO Doc 9303 Part 4 TD3 standard MRZ (2 lines x 44 characters).
+        Computes all statutory check digits.
+        """
         if len(mrz_lines) < 2:
             return None
-        
+
         l1 = self._clean_mrz_line(mrz_lines[0])
         l2 = self._clean_mrz_line(mrz_lines[1])
-        
-        # Standard TD3 (Passport) format
-        if (len(l1) >= 20 and len(l2) >= 20) and (l1.startswith("P<") or l1.startswith("P")):
-            doc_type = l1[0:2].replace("<", "")
-            issuing_country = l1[2:5].replace("<", "")
-            names_part = l1[5:]
-            name_tokens = names_part.split("<<")
-            surname = name_tokens[0].replace("<", " ").strip() if len(name_tokens) > 0 else ""
-            given_names = name_tokens[1].replace("<", " ").strip() if len(name_tokens) > 1 else ""
-            full_name = f"{given_names} {surname}".strip()
 
-            doc_number = l2[0:9].replace("<", "")
-            doc_num_chk = l2[9:10] if len(l2) > 9 else ""
-            nationality = l2[10:13].replace("<", "") if len(l2) >= 13 else ""
-            dob_raw = l2[13:19] if len(l2) >= 19 else ""  # YYMMDD
-            dob_chk = l2[19:20] if len(l2) > 19 else ""
-            sex = l2[20:21].replace("<", "") if len(l2) > 20 else ""
-            exp_raw = l2[21:27] if len(l2) >= 27 else ""  # YYMMDD
-            exp_chk = l2[27:28] if len(l2) > 27 else ""
-            optional_data = l2[28:42].replace("<", "") if len(l2) >= 42 else ""
-            composite_chk = l2[43:44] if len(l2) >= 44 else ""
+        # Require standard TD3 passport format prefix
+        if not (l1.startswith("P<") or l1.startswith("P")):
+            return None
 
-            # Convert YYMMDD to YYYY-MM-DD
-            def format_yymmdd(yymmdd: str, is_expiry: bool = False) -> str:
-                if len(yymmdd) == 6 and yymmdd.isdigit():
-                    yy = int(yymmdd[0:2])
-                    mm = yymmdd[2:4]
-                    dd = yymmdd[4:6]
-                    century = 2000 if is_expiry or yy <= 30 else 1900
-                    return f"{century + yy}-{mm}-{dd}"
-                return yymmdd
+        # Pad or trim to exactly 44 characters if slightly off due to edge noise
+        if len(l1) < 44: l1 = l1.ljust(44, "<")
+        if len(l2) < 44: l2 = l2.ljust(44, "<")
+        l1 = l1[:44]
+        l2 = l2[:44]
 
-            return {
-                "format": "ICAO_TD3_PASSPORT",
-                "document_code": doc_type,
-                "issuing_state": issuing_country,
-                "full_name": full_name,
-                "surname": surname,
-                "given_names": given_names,
-                "document_number": doc_number,
-                "document_number_check": doc_num_chk,
-                "nationality": nationality,
-                "dob": format_yymmdd(dob_raw, is_expiry=False),
-                "dob_check": dob_chk,
-                "gender": "MALE" if sex == "M" else ("FEMALE" if sex == "F" else sex),
-                "expiry_date": format_yymmdd(exp_raw, is_expiry=True),
-                "expiry_check": exp_chk,
-                "composite_check": composite_chk,
-                "line1": l1[:44],
-                "line2": l2[:44]
+        # Line 1 Breakdown:
+        doc_code = l1[0:2].replace("<", "")
+        issuing_state = l1[2:5].replace("<", "")
+        names_part = l1[5:]
+        name_tokens = names_part.split("<<")
+        surname = name_tokens[0].replace("<", " ").strip() if len(name_tokens) > 0 else ""
+        given_names = name_tokens[1].replace("<", " ").strip() if len(name_tokens) > 1 else ""
+        full_name = f"{given_names} {surname}".strip()
+
+        # Line 2 Breakdown & Checksum Fields:
+        doc_number_field = l2[0:9]
+        doc_number = doc_number_field.replace("<", "")
+        doc_num_chk_given = l2[9:10]
+        doc_num_chk_calc = calculate_icao_check_digit(doc_number_field)
+
+        nationality = l2[10:13].replace("<", "")
+        dob_raw = l2[13:19]
+        dob_chk_given = l2[19:20]
+        dob_chk_calc = calculate_icao_check_digit(dob_raw)
+        dob_valid, dob_iso = validate_icao_date(dob_raw)
+
+        sex = l2[20:21].replace("<", "")
+        gender = "MALE" if sex == "M" else ("FEMALE" if sex == "F" else "UNSPECIFIED")
+
+        exp_raw = l2[21:27]
+        exp_chk_given = l2[27:28]
+        exp_chk_calc = calculate_icao_check_digit(exp_raw)
+        exp_valid, exp_iso = validate_icao_date(exp_raw)
+
+        optional_field = l2[28:42]
+        optional_data = optional_field.replace("<", "")
+
+        composite_chk_given = l2[43:44]
+        # ICAO Doc 9303 composite check digit is computed over:
+        # doc_number + doc_num_chk + dob + dob_chk + exp + exp_chk + optional_field
+        composite_source = l2[0:10] + l2[13:20] + l2[21:43]
+        composite_chk_calc = calculate_icao_check_digit(composite_source)
+
+        checksums_valid = (
+            doc_num_chk_given == doc_num_chk_calc and
+            dob_chk_given == dob_chk_calc and
+            exp_chk_given == exp_chk_calc
+        )
+
+        return {
+            "format": "ICAO_Doc9303_TD3",
+            "document_code": doc_code,
+            "issuing_state": issuing_state,
+            "full_name": full_name,
+            "surname": surname,
+            "given_names": given_names,
+            "document_number": doc_number,
+            "nationality": nationality,
+            "dob": dob_iso,
+            "gender": gender,
+            "expiry_date": exp_iso,
+            "optional_data": optional_data,
+            "line1": l1,
+            "line2": l2,
+            "checksums": {
+                "document_number": {
+                    "given": doc_num_chk_given,
+                    "calculated": doc_num_chk_calc,
+                    "valid": doc_num_chk_given == doc_num_chk_calc
+                },
+                "dob": {
+                    "given": dob_chk_given,
+                    "calculated": dob_chk_calc,
+                    "valid": dob_chk_given == dob_chk_calc
+                },
+                "expiry": {
+                    "given": exp_chk_given,
+                    "calculated": exp_chk_calc,
+                    "valid": exp_chk_given == exp_chk_calc
+                },
+                "composite": {
+                    "given": composite_chk_given,
+                    "calculated": composite_chk_calc,
+                    "valid": composite_chk_given == composite_chk_calc
+                },
+                "all_valid": checksums_valid
             }
-        return None
+        }
 
     def parse(self, ocr_data: Dict[str, Any], doc_type_hint: Optional[str] = None) -> ExtractedFields:
         raw_text = ocr_data.get("raw_text", "")
+        ocr_conf = float(ocr_data.get("ocr_confidence", 0.0))
         doc_type = self.classify_document(raw_text, doc_type_hint)
-        
+        sanitized_preview = mask_aadhaar_number(raw_text[:200]) or ""
+
         extracted = ExtractedFields(
             document_type=doc_type,
-            raw_text_preview=raw_text[:200] + ("..." if len(raw_text) > 200 else "")
+            raw_text_preview=sanitized_preview + ("..." if len(raw_text) > 200 else ""),
+            ocr_confidence=ocr_conf,
+            evidence_state="INDETERMINATE"
         )
+
+        # If OCR returned zero text, preserve completely unpopulated state
+        if not raw_text.strip():
+            extracted.evidence_state = "UNAVAILABLE"
+            return extracted
 
         lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
 
         if doc_type == "AADHAAR":
-            # 12-digit Aadhaar Number (handles 4 4 4, 4 8, hyphens, or continuous 12 digits)
             match_num = re.search(r'\b(\d{4}[\s-]?\d{4}[\s-]?\d{4})\b', raw_text)
             if match_num:
-                extracted.document_number = re.sub(r'[\s-]', '', match_num.group(1))
-            else:
-                # Fallback check for 12 digits in close proximity
-                digit_groups = re.findall(r'\b\d{4}\b', raw_text)
-                if len(digit_groups) >= 3:
-                    extracted.document_number = "".join(digit_groups[:3])
+                clean_num = re.sub(r'[\s-]', '', match_num.group(1))
+                extracted.document_number = f"XXXX-XXXX-{clean_num[-4:]}"
 
-            # DOB
             match_dob = re.search(r'(?:DOB|Date of Birth|Year of Birth)[:\s]*([0-9]{2}[/-][0-9]{2}[/-][0-9]{4}|[0-9]{4})', raw_text, re.IGNORECASE)
             if not match_dob:
                 match_dob = re.search(r'\b([0-9]{2}[/-][0-9]{2}[/-][0-9]{4})\b', raw_text)
             if match_dob:
                 extracted.dob = match_dob.group(1)
 
-            # Gender
             match_gender = re.search(r'\b(MALE|FEMALE|TRANSGENDER)\b', raw_text, re.IGNORECASE)
             if match_gender:
                 extracted.gender = match_gender.group(1).upper()
 
-            # Name extraction heuristics (line prior to DOB or father/guardian)
             for idx, line in enumerate(lines):
                 if re.search(r'(?:DOB|Date of Birth)', line, re.IGNORECASE) and idx > 0:
                     candidate = lines[idx - 1]
@@ -133,62 +234,59 @@ class DocumentParser:
                         extracted.name = candidate.replace("Name:", "").strip()
                         break
 
+            extracted.evidence_state = "PASS" if extracted.document_number else "INDETERMINATE"
+
         elif doc_type == "PAN":
-            # PAN Number (5 letters, 4 numbers, 1 letter)
             match_pan = re.search(r'\b([A-Z]{5}[0-9]{4}[A-Z])\b', raw_text)
             if match_pan:
                 extracted.document_number = match_pan.group(1)
 
-            # DOB
             match_dob = re.search(r'\b([0-9]{2}[/-][0-9]{2}[/-][0-9]{4})\b', raw_text)
             if match_dob:
                 extracted.dob = match_dob.group(1)
 
-            # Name extraction (usually before Father's Name or first prominent line)
             for idx, line in enumerate(lines):
                 if "name" in line.lower() and idx + 1 < len(lines):
                     extracted.name = lines[idx + 1]
                     break
 
+            extracted.evidence_state = "PASS" if extracted.document_number else "INDETERMINATE"
+
         elif doc_type == "PASSPORT":
-            # Indian Passport Number (1 letter, 7 digits or standard 8-char)
+            # Extract standard 8-char Indian passport syntax
             match_ppt = re.search(r'\b([A-Z][0-9]{7})\b', raw_text)
             if not match_ppt:
                 match_ppt = re.search(r'(?:Passport\s*N[oa\.:]*\s*)([A-Z0-9]{8,9})', raw_text, re.IGNORECASE)
             if match_ppt:
                 extracted.document_number = match_ppt.group(1)
 
-            # MRZ Lines (bottom lines or containing '<' or starting with 'P<')
+            # MRZ Lines extraction
             mrz_candidates = []
             for l in lines:
                 cl = l.replace(" ", "").upper()
-                if "<" in cl or cl.startswith("P<") or cl.startswith("PC") or (len(cl) >= 20 and any(cl.startswith(p) for p in ["P", "I", "A", "2", "Z"])):
+                if "<" in cl or cl.startswith("P<") or (len(cl) >= 28 and any(cl.startswith(p) for p in ["P", "I", "A", "2", "Z"])):
                     mrz_candidates.append(l)
 
             if len(mrz_candidates) >= 2:
                 extracted.mrz_lines = [mrz_candidates[-2].replace(" ", ""), mrz_candidates[-1].replace(" ", "")]
-                parsed_mrz = self._parse_icao_mrz(extracted.mrz_lines)
+                parsed_mrz = self.parse_icao_td3_mrz(extracted.mrz_lines)
                 if parsed_mrz:
                     extracted.mrz_data = parsed_mrz
-                    if not extracted.document_number and parsed_mrz.get("document_number"):
-                        extracted.document_number = parsed_mrz.get("document_number")
-                    if not extracted.name and parsed_mrz.get("full_name"):
-                        extracted.name = parsed_mrz.get("full_name")
-                    if not extracted.dob and parsed_mrz.get("dob"):
-                        extracted.dob = parsed_mrz.get("dob")
-                    if not extracted.gender and parsed_mrz.get("gender"):
-                        extracted.gender = parsed_mrz.get("gender")
-                    if not extracted.expiry_date and parsed_mrz.get("expiry_date"):
-                        extracted.expiry_date = parsed_mrz.get("expiry_date")
+                    extracted.document_number = parsed_mrz.get("document_number") or extracted.document_number
+                    extracted.name = parsed_mrz.get("full_name") or extracted.name
+                    extracted.dob = parsed_mrz.get("dob") or extracted.dob
+                    extracted.gender = parsed_mrz.get("gender") or extracted.gender
+                    extracted.expiry_date = parsed_mrz.get("expiry_date") or extracted.expiry_date
+                    extracted.evidence_state = "PASS" if parsed_mrz["checksums"]["all_valid"] else "FAIL"
+                else:
+                    extracted.evidence_state = "INDETERMINATE"
+            else:
+                extracted.evidence_state = "PASS" if extracted.document_number else "INDETERMINATE"
 
-        # If name is still blank and lines exist, pick most plausible capitalized text
-        if not extracted.name and lines:
-            for l in lines:
-                if re.match(r'^[A-Z][a-zA-Z\s]{3,30}$', l) and not any(w in l.lower() for w in ["government", "india", "department", "republic", "passport"]):
-                    extracted.name = l.strip()
-                    break
+        else:
+            extracted.evidence_state = "INDETERMINATE"
 
-        # Confidence calculation based on extracted fields
+        # Calculate field completeness confidence
         total_fields = 4
         filled = sum([
             1 if extracted.document_number else 0,

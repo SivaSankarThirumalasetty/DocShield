@@ -43,3 +43,9 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Databases & Cache
+*.db
+*.db-shm
+*.db-wal
+.pytest_cache/

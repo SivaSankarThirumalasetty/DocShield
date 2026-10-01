@@ -1,11 +1,18 @@
 from typing import List, Optional, Dict, Any
+from enum import Enum
 from pydantic import BaseModel, Field
-from datetime import datetime
+
+class EvidenceState(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    INDETERMINATE = "INDETERMINATE"
+    UNAVAILABLE = "UNAVAILABLE"
+    DEMO = "DEMO"
 
 class HealthResponse(BaseModel):
     status: str = 'healthy'
     service: str = 'DocShield Border Screening Engine'
-    version: str = '1.0.0-prototype'
+    version: str = '2.0.0-audited'
     timestamp: str
     modules: Dict[str, bool] = Field(default_factory=dict)
     system_notes: List[str] = Field(default_factory=list)
@@ -22,6 +29,8 @@ class ExtractedFields(BaseModel):
     mrz_lines: List[str] = Field(default_factory=list)
     mrz_data: Optional[Dict[str, Any]] = None
     confidence: float = 0.0
+    ocr_confidence: float = 0.0
+    evidence_state: str = "INDETERMINATE"
     raw_text_preview: str = ''
 
 class ValidationFlag(BaseModel):
@@ -30,6 +39,7 @@ class ValidationFlag(BaseModel):
     passed: bool
     message: str
     severity: str = 'warning'  # 'info', 'warning', 'critical'
+    evidence_state: str = "PASS"
 
 class ValidationResult(BaseModel):
     overall_valid: bool = True
@@ -39,11 +49,12 @@ class ValidationResult(BaseModel):
 
 class WatchlistHit(BaseModel):
     is_flagged: bool = False
-    status: str = 'CLEARED'  # 'CLEARED', 'WATCHLIST_HIT', 'STOLEN_ID_ALERT', 'IMPOSTER_ALERT'
+    status: str = 'CLEARED'  # 'CLEARED', 'WATCHLIST_HIT', 'STOLEN_ID_ALERT', 'IMPOSTER_ALERT', 'UNAVAILABLE'
     matched_record_id: Optional[str] = None
     matched_name: Optional[str] = None
     watchlist_category: Optional[str] = None
     details: Optional[str] = None
+    evidence_state: str = "DEMO"  # DEMO_WATCHLIST default
 
 class TamperAnalysisResult(BaseModel):
     ela_score: float = 0.0  # 0.0 (clean) to 100.0 (high anomaly)
@@ -51,17 +62,25 @@ class TamperAnalysisResult(BaseModel):
     anomaly_regions: int = 0
     bounding_boxes: List[List[int]] = Field(default_factory=list)  # [[x, y, w, h], ...]
     ela_image_base64: Optional[str] = None
+    analysis_confidence: float = 0.0
     forensic_notes: List[str] = Field(default_factory=list)
+    forensic_limitations: List[str] = Field(default_factory=list)
+    evidence_state: str = "INDETERMINATE"
 
 class FaceVerificationResult(BaseModel):
     document_face_detected: bool = False
     person_face_detected: bool = False
     similarity_score: float = 0.0  # 0.0 to 100.0
-    match_verdict: str = 'NOT_APPLICABLE'  # 'MATCH', 'MISMATCH', 'INDETERMINATE', 'NOT_APPLICABLE'
+    match_verdict: str = 'NOT_APPLICABLE'  # 'MATCH', 'MISMATCH', 'INDETERMINATE', 'NOT_AVAILABLE', 'NOT_APPLICABLE'
     face_distance: Optional[float] = None
+    biometric_model: str = "dlib 128-d ResNet (face_recognition)"
+    face_count_doc: int = 0
+    face_count_person: int = 0
+    quality_flags: List[str] = Field(default_factory=list)
     document_face_crop_base64: Optional[str] = None
     person_face_crop_base64: Optional[str] = None
     notes: Optional[str] = None
+    evidence_state: str = "NOT_APPLICABLE"
 
 class RiskAssessment(BaseModel):
     score: int = 0  # 0 to 100
@@ -70,6 +89,7 @@ class RiskAssessment(BaseModel):
     reasons: List[str] = Field(default_factory=list)
     recommended_action: str = 'Allow passage'
     breakdown: Dict[str, float] = Field(default_factory=dict)
+    evidence_states: Dict[str, str] = Field(default_factory=dict)
 
 class OfficerReview(BaseModel):
     reviewed: bool = False
@@ -100,6 +120,7 @@ class ScreeningResult(BaseModel):
     officer_review: Optional[OfficerReview] = None
     document_preview_base64: Optional[str] = None
     person_preview_base64: Optional[str] = None
+    session_token: Optional[str] = None
 
 class FaceVerifyResponse(BaseModel):
     status: str

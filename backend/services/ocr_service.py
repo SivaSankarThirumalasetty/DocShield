@@ -3,6 +3,7 @@ import re
 from typing import Dict, List, Any, Optional
 import numpy as np
 from PIL import Image
+from ..core.logging import logger
 
 try:
     import pytesseract
@@ -34,7 +35,6 @@ class OCRService:
     def _check_tesseract(self):
         if not PYTESSERACT_AVAILABLE:
             return
-        # Check environment or common locations
         env_cmd = os.environ.get("TESSERACT_CMD")
         if env_cmd and os.path.exists(env_cmd):
             pytesseract.pytesseract.tesseract_cmd = env_cmd
@@ -47,33 +47,41 @@ class OCRService:
                 self.tesseract_configured = True
                 return
 
-        # Check if tesseract is in system PATH
         try:
             pytesseract.get_tesseract_version()
             self.tesseract_configured = True
         except Exception:
             self.tesseract_configured = False
 
+    @property
+    def is_engine_available(self) -> bool:
+        """Indicates if at least one OCR backend (Tesseract or EasyOCR) is configured or importable."""
+        return self.tesseract_configured or EASYOCR_AVAILABLE or (self.easyocr_reader is not None)
+
     def _get_easyocr_reader(self):
         if self.easyocr_reader is None and EASYOCR_AVAILABLE:
             try:
                 self.easyocr_reader = easyocr.Reader(['en'], gpu=False)
             except Exception as e:
-                print(f"[!] Warning: Could not initialize EasyOCR reader: {e}")
+                logger.warning(f"Could not initialize EasyOCR reader: {e}")
         return self.easyocr_reader
 
     def extract_text(self, pil_image: Image.Image) -> Dict[str, Any]:
         """
         Extracts raw text, line tokens, and bounding boxes.
-        Uses Tesseract if configured, or EasyOCR deep-learning pipeline.
+        Computes explicit OCR confidence from token confidence scores.
+        Distinguishes between valid text extraction and unreadable negative results.
         """
-        # 1. Try Tesseract
+        raw_text = ""
+        words = []
+        confidences = []
+
+        # 1. Try Tesseract first
         if self.tesseract_configured and PYTESSERACT_AVAILABLE:
             try:
                 data = pytesseract.image_to_data(pil_image, output_type=pytesseract.Output.DICT)
-                raw_text = pytesseract.image_to_string(pil_image)
-                words = []
-                n_boxes = len(data["text"])
+                tess_text = pytesseract.image_to_string(pil_image)
+                n_boxes = len(data.get("text", []))
                 for i in range(n_boxes):
                     txt = data["text"][i].strip()
                     conf = float(data["conf"][i])
@@ -83,29 +91,39 @@ class OCRService:
                             "confidence": conf,
                             "bbox": [data["left"][i], data["top"][i], data["width"][i], data["height"][i]]
                         })
-                return {
-                    "engine": "tesseract",
-                    "raw_text": raw_text.strip(),
-                    "words": words,
-                    "success": True
-                }
-            except Exception as e:
-                print(f"[!] Tesseract execution error: {e}. Trying EasyOCR.")
+                        confidences.append(conf)
 
-        # 2. Try EasyOCR
+                raw_text = tess_text.strip()
+                mean_conf = round(float(np.mean(confidences)), 1) if confidences else 0.0
+
+                if len(raw_text) > 10 and mean_conf > 30.0:
+                    return {
+                        "engine": "tesseract",
+                        "raw_text": raw_text,
+                        "words": words,
+                        "ocr_confidence": mean_conf,
+                        "success": True
+                    }
+                else:
+                    logger.info("Tesseract yielded low character confidence. Cascading to EasyOCR.")
+            except Exception as e:
+                logger.warning(f"Tesseract execution error: {e}. Cascading to EasyOCR.")
+
+        # 2. Try EasyOCR fallback if text is sparse or low-confidence
         reader = self._get_easyocr_reader()
         if reader is not None:
             try:
                 img_np = np.array(pil_image.convert("RGB"))
                 results = reader.readtext(img_np)
-                # Sort bounding boxes top-to-bottom, left-to-right
-                # results: [ (bbox, text, prob) ]
                 words = []
                 lines = []
+                confidences = []
                 for bbox, text, prob in results:
                     txt = text.strip()
                     if not txt:
                         continue
+                    prob_pct = round(float(prob) * 100.0, 1)
+                    confidences.append(prob_pct)
                     xs = [pt[0] for pt in bbox]
                     ys = [pt[1] for pt in bbox]
                     x_min = int(min(xs))
@@ -114,34 +132,44 @@ class OCRService:
                     h = int(max(ys) - y_min)
                     words.append({
                         "text": txt,
-                        "confidence": round(float(prob) * 100.0, 1),
+                        "confidence": prob_pct,
                         "bbox": [x_min, y_min, w, h]
                     })
                     lines.append(txt)
 
-                raw_text = "\n".join(lines)
-                return {
-                    "engine": "easyocr_deeplearning",
-                    "raw_text": raw_text,
-                    "words": words,
-                    "success": True
-                }
+                easy_text = "\n".join(lines).strip()
+                mean_conf = round(float(np.mean(confidences)), 1) if confidences else 0.0
+
+                if easy_text:
+                    return {
+                        "engine": "easyocr_deeplearning",
+                        "raw_text": easy_text,
+                        "words": words,
+                        "ocr_confidence": mean_conf,
+                        "success": True
+                    }
             except Exception as e:
-                print(f"[!] EasyOCR error: {e}. Falling back to prototype parser.")
+                logger.warning(f"EasyOCR fallback failed: {e}")
 
-        # 3. Prototype Fallback Reader
-        return self._prototype_ocr(pil_image)
+        # If Tesseract returned some text earlier, use it even if short
+        if raw_text:
+            mean_conf = round(float(np.mean(confidences)), 1) if confidences else 0.0
+            return {
+                "engine": "tesseract",
+                "raw_text": raw_text,
+                "words": words,
+                "ocr_confidence": mean_conf,
+                "success": True
+            }
 
-    def _prototype_ocr(self, pil_image: Image.Image) -> Dict[str, Any]:
-        """
-        Prototype OCR fallback that allows full end-to-end pipeline testing.
-        """
+        # 3. Explicit Unreadable / Negative State (Never fabricates)
         return {
-            "engine": "prototype_heuristic",
-            "raw_text": "[OCR Engine Standby: Upload an image with legible text]",
+            "engine": "none",
+            "raw_text": "",
             "words": [],
-            "success": True,
-            "note": "Install Tesseract or ensure EasyOCR is active for live character recognition."
+            "ocr_confidence": 0.0,
+            "success": False,
+            "note": "Document image contains no legible or recognizable text."
         }
 
 ocr_service = OCRService()
