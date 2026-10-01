@@ -35,19 +35,27 @@ class SecurityAndPrivacyHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
         
-        # Defensive Security Headers
+        # Defensive Security Headers & Font/Script CSP permissions
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
+            "default-src 'self' data: blob:; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com data:; "
             "img-src 'self' data: blob:; "
-            "script-src 'self'; "
-            "style-src 'self' 'unsafe-inline'; "
+            "connect-src 'self' *; "
             "frame-ancestors 'none';"
         )
+        # Ensure static assets are not blocked by browser CORS checks on module scripts
+        if request.url.path.startswith(("/assets", "/samples", "/favicon")):
+            response.headers["Access-Control-Allow-Origin"] = "*"
+        elif "Origin" in request.headers and request.headers["Origin"] in settings.cors_origins:
+            response.headers["Access-Control-Allow-Origin"] = request.headers["Origin"]
+
         if request.url.scheme == "https":
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 

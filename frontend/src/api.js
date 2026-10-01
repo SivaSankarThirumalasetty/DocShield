@@ -2,15 +2,24 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
 // Ephemeral in-memory session token store for active analysis
 let currentSessionToken = null;
-let currentOfficerKey = localStorage.getItem("docshield_officer_key") || "";
+let currentOfficerKey = "";
+try {
+  currentOfficerKey = typeof window !== "undefined" && window.localStorage ? localStorage.getItem("docshield_officer_key") || "" : "";
+} catch (_) {
+  currentOfficerKey = "";
+}
 
 export function setOfficerKey(key) {
   currentOfficerKey = key || "";
-  if (key) {
-    localStorage.setItem("docshield_officer_key", key);
-  } else {
-    localStorage.removeItem("docshield_officer_key");
-  }
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      if (key) {
+        localStorage.setItem("docshield_officer_key", key);
+      } else {
+        localStorage.removeItem("docshield_officer_key");
+      }
+    }
+  } catch (_) {}
 }
 
 export function getOfficerKey() {
