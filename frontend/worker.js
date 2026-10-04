@@ -136,6 +136,23 @@ function buildForwardedHeaders(request, env) {
 }
 
 async function routeToBackend(request, env, url) {
+  const contentLength = Number(request.headers.get("Content-Length") || "0");
+  if (contentLength > 10 * 1024 * 1024) {
+    return new Response(
+      JSON.stringify({
+        detail: "File size exceeds maximum allowed limit of 10MB.",
+      }),
+      {
+        status: 413,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "X-Content-Type-Options": "nosniff",
+          "X-DocShield-Backend": "cloudflare-worker",
+        },
+      }
+    );
+  }
+
   const proxyHeaders = buildForwardedHeaders(request, env);
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
 
