@@ -162,7 +162,7 @@ DocShield's React/Vite frontend is configured for Git-based deployment on **Clou
    - **Build command**: `npm run build`
    - **Deploy command**: `npx wrangler deploy`
 3. *(Optional)* Configure **Build variables**:
-   - `VITE_API_BASE_URL` = `https://docshield-production.up.railway.app` *(already configured as the default in `frontend/.env.production`)*
+   - `VITE_API_BASE_URL` = `https://docshield.sivasankar-t1606.workers.dev` *(already configured as the default in `frontend/.env.production`)*
    - `VITE_APP_MODE` = `PROTOTYPE`
 4. Save and trigger a deployment. Wrangler will compile the Vite React app into `frontend/dist` and upload only the compiled `dist` bundle (`index.html`, `/assets/index-<hash>.js`, `/assets/index-<hash>.css`, `/samples/*`) along with `worker.js`.
 
@@ -170,27 +170,26 @@ DocShield's React/Vite frontend is configured for Git-based deployment on **Clou
 
 ## Backend Deployment (FastAPI + OpenCV + OCR + dlib)
 
-Because the backend executes native C++ and PyTorch computer vision models (`OpenCV DNN`, `dlib 128-d ResNet`, `Tesseract/EasyOCR`) with a measured **Peak RSS of ~1.26 GB**, it must run on a container-capable Python runtime rather than Cloudflare Workers:
+Because the backend executes native C++ and PyTorch computer vision models (`OpenCV DNN`, `dlib 128-d ResNet`, `Tesseract/EasyOCR`) with a measured **Peak RSS of ~1.26 GB**, it runs on a **Cloudflare Container (`DocShieldBackendContainer`, `standard-2`)** routed via `https://docshield.sivasankar-t1606.workers.dev/api/*`:
 
-- **Option A — Railway (Active Production Backend)**:
-  - Currently live at `https://docshield-production.up.railway.app`
-  - Uses root `Dockerfile` + `railway.json` (or `backend/Dockerfile` for backend-only deployment).
-- **Option B — Hugging Face Spaces (Free-Tier Docker Container — 2 vCPU / 16 GB RAM)**:
-  - The only free-tier container service with sufficient RAM (16 GB) to run PyTorch + EasyOCR + dlib without Out-Of-Memory (OOM) crashes.
-  - Deploy using `backend/Dockerfile` or root `Dockerfile` on port `7860`.
+- **Option A — Cloudflare Containers (Primary Production Backend)**:
+  - Routed via `https://docshield.sivasankar-t1606.workers.dev` (`DocShieldBackendContainer` Durable Object on port `8000`).
+  - Uses `backend/Dockerfile` configured in `wrangler.toml`.
+- **Option B — Standalone Docker Container (`backend/Dockerfile` or `Dockerfile`)**:
+  - Can also be deployed on any Docker-compatible container runtime on port `8000`.
 
-See **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** for full step-by-step instructions, free-tier benchmarks, storage architecture, and security configuration.
+See **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** for full step-by-step instructions, resource benchmarks, storage architecture, and security configuration.
 
 ---
 
 ## Environment Variables (Public vs Private Separation)
 
-### PUBLIC Frontend Variables (`frontend/.env` / Cloudflare Pages)
+### PUBLIC Frontend Variables (`frontend/.env` / Cloudflare Workers)
 > **Warning**: All `VITE_*` variables are embedded into the public JavaScript bundle at build time. **Never** put private keys or officer tokens in `VITE_*` variables.
 
 | Variable | Example / Default | Description |
 |---|---|---|
-| `VITE_API_BASE_URL` | `https://docshield-production.up.railway.app` | Base URL for the FastAPI backend (`http://127.0.0.1:8000` in local dev) |
+| `VITE_API_BASE_URL` | `https://docshield.sivasankar-t1606.workers.dev` | Base URL for the Cloudflare Worker/Container API (`http://127.0.0.1:8000` in local dev) |
 | `VITE_APP_MODE` | `PROTOTYPE` | Displays prototype notices in the UI |
 
 ### PRIVATE Backend Variables (`.env` / Railway / Container Runtime)

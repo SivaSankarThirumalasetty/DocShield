@@ -1,7 +1,14 @@
-// Configurable API base URL for Cloudflare Pages -> Python FastAPI backend communication.
+// Configurable API base URL for Cloudflare Worker/Container -> Python FastAPI backend communication.
 // Development: defaults to "" (routed via Vite dev proxy to http://127.0.0.1:8000) or explicit VITE_API_BASE_URL.
-// Production (Cloudflare Pages): set VITE_API_BASE_URL=https://<actual-production-backend-domain>
-const rawApiBase = (import.meta.env.VITE_API_BASE_URL || "").trim();
+// Production (Cloudflare): defaults to https://docshield.sivasankar-t1606.workers.dev (configurable via VITE_API_BASE_URL).
+const DEFAULT_CLOUDFLARE_API_BASE = "https://docshield.sivasankar-t1606.workers.dev";
+const rawApiBase = (
+  import.meta.env.VITE_API_BASE_URL !== undefined
+    ? import.meta.env.VITE_API_BASE_URL
+    : import.meta.env.PROD
+    ? DEFAULT_CLOUDFLARE_API_BASE
+    : ""
+).trim();
 export const API_BASE = rawApiBase.replace(/\/+$/, "");
 
 const DEFAULT_TIMEOUT_MS = 45000;

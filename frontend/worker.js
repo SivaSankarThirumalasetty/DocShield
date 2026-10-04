@@ -5,7 +5,6 @@
 
 import { Container, getContainer } from "@cloudflare/containers";
 
-const DEFAULT_BACKEND_ORIGIN = "https://docshield-production.up.railway.app";
 const CONTAINER_SINGLETON_NAME = "docshield-api-singleton";
 
 export class DocShieldBackendContainer extends Container {
@@ -131,7 +130,8 @@ async function routeToBackend(request, env, url) {
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
 
   if (env.DOCSHIELD_BACKEND) {
-    const fallbackClone = hasBody ? request.clone() : null;
+    const fallbackClone =
+      hasBody && env.BACKEND_ORIGIN ? request.clone() : null;
     try {
       const containerStub = getContainer(
         env.DOCSHIELD_BACKEND,
@@ -156,7 +156,7 @@ async function routeToBackend(request, env, url) {
         });
       }
     } catch (_) {
-      // Fall through to BACKEND_ORIGIN
+      // Fall through if optional BACKEND_ORIGIN secret is configured
     }
 
     if (fallbackClone) {
@@ -164,72 +164,73 @@ async function routeToBackend(request, env, url) {
     }
   }
 
-  const backendOrigin = (env.BACKEND_ORIGIN || DEFAULT_BACKEND_ORIGIN)
-    .trim()
-    .replace(/\/+$/, "");
+  const backendOrigin = (env.BACKEND_ORIGIN || "").trim().replace(/\/+$/, "");
+  if (backendOrigin) {
+    const targetUrl = `${backendOrigin}${url.pathname}${url.search}`;
+    const init = {
+      method: request.method,
+      headers: proxyHeaders,
+      redirect: "manual",
+    };
 
-  const targetUrl = `${backendOrigin}${url.pathname}${url.search}`;
-  const init = {
-    method: request.method,
-    headers: proxyHeaders,
-    redirect: "manual",
-  };
-
-  if (hasBody) {
-    init.body = request.body;
-  }
-
-  try {
-    const upstream = await fetch(targetUrl, init);
-    if (
-      url.pathname === "/ready" &&
-      (upstream.headers.get("content-type") || "").includes("text/html")
-    ) {
-      const healthRes = await fetch(`${backendOrigin}/api/health`, {
-        method: "GET",
-        headers: proxyHeaders,
-      });
-      const healthJson = await healthRes.json();
-      return new Response(
-        JSON.stringify({
-          status: healthJson.status === "healthy" ? "ready" : "degraded",
-          mode: env.DOCSHIELD_MODE || "PROTOTYPE",
-          checks: healthJson.modules || {},
-          timestamp: healthJson.timestamp || new Date().toISOString(),
-        }),
-        {
-          status: healthRes.status,
-          headers: {
-            "Content-Type": "application/json; charset=utf-8",
-            "X-Content-Type-Options": "nosniff",
-            "X-DocShield-Backend": "origin-proxy",
-          },
-        }
-      );
+    if (hasBody) {
+      init.body = request.body;
     }
-    const responseHeaders = new Headers(upstream.headers);
-    responseHeaders.set("X-Content-Type-Options", "nosniff");
-    responseHeaders.set("X-DocShield-Backend", "origin-proxy");
-    return new Response(upstream.body, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers: responseHeaders,
-    });
-  } catch (_) {
-    return new Response(
-      JSON.stringify({
-        detail:
-          "Screening backend is temporarily unreachable. Please retry in a few seconds.",
-      }),
-      {
-        status: 502,
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store",
-        },
+
+    try {
+      const upstream = await fetch(targetUrl, init);
+      if (
+        url.pathname === "/ready" &&
+        (upstream.headers.get("content-type") || "").includes("text/html")
+      ) {
+        const healthRes = await fetch(`${backendOrigin}/api/health`, {
+          method: "GET",
+          headers: proxyHeaders,
+        });
+        const healthJson = await healthRes.json();
+        return new Response(
+          JSON.stringify({
+            status: healthJson.status === "healthy" ? "ready" : "degraded",
+            mode: env.DOCSHIELD_MODE || "PROTOTYPE",
+            checks: healthJson.modules || {},
+            timestamp: healthJson.timestamp || new Date().toISOString(),
+          }),
+          {
+            status: healthRes.status,
+            headers: {
+              "Content-Type": "application/json; charset=utf-8",
+              "X-Content-Type-Options": "nosniff",
+              "X-DocShield-Backend": "cloudflare-worker",
+            },
+          }
+        );
       }
-    );
+      const responseHeaders = new Headers(upstream.headers);
+      responseHeaders.set("X-Content-Type-Options", "nosniff");
+      responseHeaders.set("X-DocShield-Backend", "cloudflare-worker");
+      return new Response(upstream.body, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: responseHeaders,
+      });
+    } catch (_) {
+      // Fall through to 502 error response
+    }
   }
+
+  return new Response(
+    JSON.stringify({
+      detail:
+        "Screening backend is temporarily unreachable. Please retry in a few seconds.",
+    }),
+    {
+      status: 502,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    }
+  );
 }
 
 export default {

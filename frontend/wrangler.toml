@@ -17,7 +17,6 @@ run_worker_first = true
 DOCSHIELD_ENV = "production"
 DOCSHIELD_MODE = "PROTOTYPE"
 FRONTEND_ORIGIN = "https://docshield.sivasankar-t1606.workers.dev"
-BACKEND_ORIGIN = "https://docshield-production.up.railway.app"
 
 [[containers]]
 class_name = "DocShieldBackendContainer"

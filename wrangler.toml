@@ -21,7 +21,6 @@ run_worker_first = true
 DOCSHIELD_ENV = "production"
 DOCSHIELD_MODE = "PROTOTYPE"
 FRONTEND_ORIGIN = "https://docshield.sivasankar-t1606.workers.dev"
-BACKEND_ORIGIN = "https://docshield-production.up.railway.app"
 
 # Cloudflare Container configuration for the FastAPI AI/CV backend
 # Requires standard-2 (1 vCPU, 6 GiB RAM, 12 GB disk) or standard-1 (1/2 vCPU, 4 GiB RAM, 8 GB disk)
