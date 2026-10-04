@@ -151,24 +151,20 @@ npm run dev
 
 ---
 
-## Cloudflare Pages Deployment (Frontend)
+## Cloudflare Workers Deployment (Frontend + Edge Proxy)
 
-DocShield's React/Vite frontend is configured for Git-based deployment on **Cloudflare Pages**:
+DocShield's React/Vite frontend is configured for Git-based deployment on **Cloudflare Workers with Static Assets** (`https://docshield.sivasankar-t1606.workers.dev/`):
 
-1. Log in to the **Cloudflare Dashboard** → **Compute (Workers & Pages)** → **Create application** → **Pages** → **Connect to Git**.
-2. Select the GitHub repository: `SivaSankarThirumalasetty/DocShield`.
-3. Configure the build settings:
-   - **Production branch**: `cloudflare-migration` *(or `master` once merged)*
-   - **Root directory**: `frontend`
-   - **Build command**: `npm ci && npm run build`
-   - **Build output directory**: `dist`
-   - **Node.js version**: `20` (via `NODE_VERSION=20` environment variable)
-4. Configure **Environment Variables** in Cloudflare Pages:
-   - `VITE_API_BASE_URL` = `https://docshield-production.up.railway.app` *(or your custom backend domain)*
+1. Open the **Cloudflare Dashboard** → **Compute (Workers & Pages)** → **`docshield` Worker** → **Settings** → **Build**.
+2. Verify the **Git repository** connection (`SivaSankarThirumalasetty/DocShield`) and set the build configuration:
+   - **Production branch**: `cloudflare-migration`
+   - **Root directory**: `/` *(or `frontend` — both contain a valid `wrangler.toml` and `worker.js`)*
+   - **Build command**: `npm run build`
+   - **Deploy command**: `npx wrangler deploy`
+3. *(Optional)* Configure **Build variables**:
+   - `VITE_API_BASE_URL` = `https://docshield-production.up.railway.app` *(already configured as the default in `frontend/.env.production`)*
    - `VITE_APP_MODE` = `PROTOTYPE`
-5. Save and Deploy. Cloudflare Pages will automatically rebuild whenever the production branch changes.
-
-> **Alternative Same-Origin Proxy Mode**: If you prefer zero-CORS same-origin API requests (`https://<your-pages-domain>/api/*`), set `VITE_API_BASE_URL=/` at build time and configure `BACKEND_ORIGIN=https://docshield-production.up.railway.app` in Cloudflare Pages runtime variables. The included Cloudflare Pages Function (`frontend/functions/api/[[path]].js`) will proxy `/api/*` requests at the Cloudflare edge.
+4. Save and trigger a deployment. Wrangler will compile the Vite React app into `frontend/dist` and upload only the compiled `dist` bundle (`index.html`, `/assets/index-<hash>.js`, `/assets/index-<hash>.css`, `/samples/*`) along with `worker.js`.
 
 ---
 

@@ -83,37 +83,33 @@ npm run dev
 
 ---
 
-## 3. Cloudflare Pages Deployment (Frontend)
+## 3. Cloudflare Workers Deployment (`docshield.sivasankar-t1606.workers.dev`)
 
-### 3.1 Build Verification
-- **Frontend Root Directory**: `frontend`
-- **Install & Build Command**: `npm ci && npm run build`
-- **Output Directory**: `dist` (inside `frontend/`, i.e. `frontend/dist` from repository root)
-- **Static Configuration Included in `frontend/public/`**:
-  - [`frontend/public/_redirects`](../frontend/public/_redirects): Routes all SPA paths (`/*`) to `/index.html` with HTTP `200`.
-  - [`frontend/public/_headers`](../frontend/public/_headers): Attaches `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(self)`, `Content-Security-Policy`, and immutable caching for `/assets/*`.
+### 3.1 Build & Static Assets Pipeline
+- **Frontend Source Directory**: `frontend/`
+- **Production Build Command**: `npm run build` (runs `npm --prefix frontend ci && npm --prefix frontend run build` from `/` or `vite build` from `frontend/`)
+- **Compiled Output Directory**: `frontend/dist` (`./dist` relative to `frontend/`)
+- **Worker Entrypoint**: [`worker.js`](../worker.js) (and [`frontend/worker.js`](../frontend/worker.js))
+- **Wrangler Configuration**: [`wrangler.toml`](../wrangler.toml) (and [`frontend/wrangler.toml`](../frontend/wrangler.toml))
+  - `[assets]` binds `./frontend/dist` (or `./dist`) to `env.ASSETS`.
+  - Serves `/assets/*.js` with `application/javascript; charset=utf-8` and `/assets/*.css` with `text/css; charset=utf-8`.
+  - Blocks `/src/*` and returns `404 Not Found` (`text/plain`) for any missing `.js`/`.css`/image file so the browser never receives `text/html` for module scripts.
+  - Serves compiled `/index.html` (`200 OK`) for extensionless SPA client routes (`/`, `/screening`, `/history`, `/methodology`, `/privacy`).
+  - Proxies `/api/*`, `/health`, and `/ready` to `BACKEND_ORIGIN` (`https://docshield-production.up.railway.app`).
 
-### 3.2 Step-by-Step GitHub Connection in Cloudflare Dashboard
-1. Open the [Cloudflare Dashboard](https://dash.cloudflare.com/) and navigate to **Compute (Workers & Pages)** → **Create** → **Pages** → **Connect to Git**.
-2. Authorize GitHub and select the repository: **`SivaSankarThirumalasetty/DocShield`**.
-3. Configure **Build settings**:
-   | Setting | Value (Option 1: Root dir = `frontend`) | Value (Option 2: Repo root) |
+### 3.2 Step-by-Step Cloudflare Workers Builds Setup
+1. Open the [Cloudflare Dashboard](https://dash.cloudflare.com/) → **Compute (Workers & Pages)** → **`docshield`** → **Settings** → **Build**.
+2. Configure the **Build settings**:
+   | Setting | Recommended Value (Root = `/`) | Alternative Value (Root = `frontend`) |
    |---|---|---|
-   | **Project name** | `docshield` | `docshield` |
-   | **Production branch** | `cloudflare-migration` *(or `master`)* | `cloudflare-migration` *(or `master`)* |
-   | **Root directory** | `frontend` | `/` *(leave blank)* |
-   | **Build command** | `npm ci && npm run build` | `npm --prefix frontend ci && npm --prefix frontend run build` |
-   | **Build output directory** | `dist` | `frontend/dist` |
-4. Under **Environment variables (Build & Runtime)**, add:
-   - `NODE_VERSION` = `20`
-   - `VITE_API_BASE_URL` = `https://docshield-production.up.railway.app` *(or your backend URL)*
+   | **Production branch** | `cloudflare-migration` | `cloudflare-migration` |
+   | **Root directory** | `/` | `frontend` |
+   | **Build command** | `npm run build` | `npm ci && npm run build` |
+   | **Deploy command** | `npx wrangler deploy` | `npx wrangler deploy` |
+3. *(Optional)* Under **Build variables**, set:
+   - `VITE_API_BASE_URL` = `https://docshield-production.up.railway.app` *(already defaulted in `frontend/.env.production`)*
    - `VITE_APP_MODE` = `PROTOTYPE`
-5. Click **Save and Deploy**. Every `git push` to the configured branch will automatically trigger a new Cloudflare Pages build and atomic edge deployment.
-
-### 3.3 Optional Edge Proxy Mode (Zero-CORS Same-Origin API)
-DocShield includes a Cloudflare Pages Function at [`frontend/functions/api/[[path]].js`](../frontend/functions/api/[[path]].js):
-- If you set `VITE_API_BASE_URL=/` (or leave it empty in production) and configure the runtime variable `BACKEND_ORIGIN=https://docshield-production.up.railway.app` in Cloudflare Pages, all browser requests to `https://<project>.pages.dev/api/*` are proxied at the Cloudflare edge to `BACKEND_ORIGIN/api/*`.
-- This eliminates cross-origin preflight overhead and keeps the backend URL completely abstracted behind your Cloudflare Pages domain.
+4. Save and trigger **Retry build / Deploy** on the latest commit of `cloudflare-migration`.
 
 ---
 

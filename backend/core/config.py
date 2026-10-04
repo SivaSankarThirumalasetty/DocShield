@@ -45,13 +45,13 @@ class Settings(BaseModel):
     cors_origins_raw: str = Field(
         default_factory=lambda: os.getenv(
             "CORS_ORIGINS",
-            "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000,https://docshield.pages.dev"
+            "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000,https://docshield.pages.dev,https://docshield.sivasankar-t1606.workers.dev"
         )
     )
     cors_origin_regex: str = Field(
         default_factory=lambda: os.getenv(
             "CORS_ORIGIN_REGEX",
-            r"^https://([a-z0-9-]+\.)?docshield(-[a-z0-9-]+)?\.pages\.dev$"
+            r"^https://([a-z0-9-]+\.)?docshield(-[a-z0-9-]+)?\.(pages\.dev|sivasankar-t1606\.workers\.dev)$"
         )
     )
     officer_key: str = Field(

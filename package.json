@@ -1,0 +1,12 @@
+{
+  "name": "docshield",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend ci && npm --prefix frontend run build",
+    "preview": "npm --prefix frontend run preview",
+    "deploy": "npx wrangler deploy"
+  }
+}

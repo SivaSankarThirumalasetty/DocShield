@@ -9,8 +9,9 @@ SAMPLE_DIR = Path(__file__).resolve().parent.parent.parent / "sample_data"
 
 
 def test_cloudflare_pages_cors_allowed():
-    """Verify Cloudflare Pages production and preview subdomains are allowed via CORS."""
+    """Verify Cloudflare Workers and Pages production/preview subdomains are allowed via CORS."""
     for origin in [
+        "https://docshield.sivasankar-t1606.workers.dev",
         "https://docshield.pages.dev",
         "https://cloudflare-migration.docshield.pages.dev",
     ]:

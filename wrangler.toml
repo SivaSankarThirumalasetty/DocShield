@@ -1,9 +1,17 @@
-# Cloudflare Pages Configuration for DocShield Frontend
+# Cloudflare Worker Configuration for DocShield (Repository Root)
+# Deploys the compiled Vite production build (frontend/dist) via Cloudflare Workers Static Assets
 name = "docshield"
-compatibility_date = "2026-10-01"
-pages_build_output_dir = "frontend/dist"
+main = "worker.js"
+compatibility_date = "2025-04-01"
 
-# Note:
-# Python/FastAPI/OpenCV/OCR/dlib backend runs on a container-capable Python runtime
-# (e.g., Railway / Hugging Face Spaces Docker) and is connected via VITE_API_BASE_URL
-# or optional Cloudflare Pages Function proxy (BACKEND_ORIGIN).
+[build]
+command = "npm --prefix frontend ci && npm --prefix frontend run build"
+
+[assets]
+directory = "./frontend/dist"
+binding = "ASSETS"
+not_found_handling = "none"
+run_worker_first = true
+
+[vars]
+BACKEND_ORIGIN = "https://docshield-production.up.railway.app"

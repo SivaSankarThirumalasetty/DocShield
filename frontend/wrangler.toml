@@ -1,0 +1,17 @@
+# Cloudflare Worker Configuration for DocShield (when Root Directory = "frontend")
+# Deploys the compiled Vite production build (./dist) via Cloudflare Workers Static Assets
+name = "docshield"
+main = "worker.js"
+compatibility_date = "2025-04-01"
+
+[build]
+command = "npm run build"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "none"
+run_worker_first = true
+
+[vars]
+BACKEND_ORIGIN = "https://docshield-production.up.railway.app"
