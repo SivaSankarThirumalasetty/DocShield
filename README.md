@@ -102,11 +102,11 @@ DocShield/
 │   └── vite.config.js              # Vite build & local dev proxy configuration
 │
 ├── docs/
-│   └── DEPLOYMENT.md               # Comprehensive Cloudflare Pages + Backend Deployment Guide
+│   └── DEPLOYMENT.md               # Comprehensive Cloudflare Workers & Container Deployment Guide
 ├── sample_data/                    # Reference document & face fixtures
-├── Dockerfile                      # Unified multi-stage Dockerfile (Railway compatible)
-├── railway.json                    # Railway deployment configuration
-├── wrangler.toml                   # Cloudflare Pages configuration
+├── Dockerfile                      # Unified multi-stage Dockerfile (Cloudflare Container / Docker compatible)
+├── worker.js                       # Cloudflare Worker & DocShieldBackendContainer entrypoint
+├── wrangler.toml                   # Cloudflare Workers & Containers configuration
 ├── .env.example                    # Backend private environment variable template
 └── README.md
 ```
@@ -192,7 +192,7 @@ See **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** for full step-by-step instruc
 | `VITE_API_BASE_URL` | `https://docshield.sivasankar-t1606.workers.dev` | Base URL for the Cloudflare Worker/Container API (`http://127.0.0.1:8000` in local dev) |
 | `VITE_APP_MODE` | `PROTOTYPE` | Displays prototype notices in the UI |
 
-### PRIVATE Backend Variables (`.env` / Railway / Container Runtime)
+### PRIVATE Backend Variables (`.env` / Cloudflare Container / Docker Runtime)
 > **Security**: Keep these strictly on the backend server. Never commit `.env` to Git.
 
 | Variable | Example / Default | Description |
@@ -200,9 +200,9 @@ See **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** for full step-by-step instruc
 | `DOCSHIELD_ENV` | `production` | Disables `/api/docs`, `/api/redoc`, and `/api/debug` in production |
 | `DOCSHIELD_MODE` | `PROTOTYPE` | Operational mode (`DEMO`, `PROTOTYPE`, `OPERATIONAL`) |
 | `DOCSHIELD_OFFICER_KEY` | *(Secret 32+ char token)* | Required in `X-Officer-Key` header for `/api/cases` and officer overrides |
-| `FRONTEND_ORIGIN` | `https://docshield.pages.dev` | Explicitly allowed Cloudflare Pages frontend origin for CORS |
-| `CORS_ORIGINS` | `https://docshield.pages.dev` | Comma-separated list of allowed CORS origins (never `*` in production) |
-| `CORS_ORIGIN_REGEX` | `^https://([a-z0-9-]+\.)?docshield(-[a-z0-9-]+)?\.pages\.dev$` | Regex matching Cloudflare Pages preview & production subdomains |
+| `FRONTEND_ORIGIN` | `https://docshield.sivasankar-t1606.workers.dev` | Explicitly allowed Cloudflare Worker frontend origin for CORS |
+| `CORS_ORIGINS` | `https://docshield.sivasankar-t1606.workers.dev` | Comma-separated list of allowed CORS origins (never `*` in production) |
+| `CORS_ORIGIN_REGEX` | `^https://([a-zA-Z0-9-]+\.)*docshield(-[a-zA-Z0-9-]+)?\.(pages|workers)\.dev$` | Regex matching Cloudflare Workers & Pages subdomains |
 | `DATABASE_URL` | `sqlite:///./backend/data/docshield.db` | SQLite WAL or PostgreSQL connection string |
 | `MAX_UPLOAD_SIZE_BYTES` | `10485760` | 10 MB maximum upload size |
 | `MAX_IMAGE_PIXELS` | `10000000` | 10 MP limit against decompression bombs |

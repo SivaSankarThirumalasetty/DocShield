@@ -56,7 +56,7 @@ RUN mkdir -p /root/.EasyOCR/model && \
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 RUN mkdir -p ./frontend/dist/samples && cp sample_data/*.png ./frontend/dist/samples/ 2>/dev/null || true
 
-# Expose default port (Railway/Render provide dynamic $PORT at runtime)
+# Expose default port (Cloudflare Containers / Docker provide dynamic $PORT at runtime)
 EXPOSE 8000
 
 # Healthcheck
