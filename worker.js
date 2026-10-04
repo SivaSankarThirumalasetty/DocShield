@@ -69,6 +69,26 @@ function applyResponseHeaders(response, pathname) {
   });
 }
 
+async function fetchAssetWithDistFallback(env, request, url, targetPath) {
+  const primaryUrl = new URL(targetPath, url.origin);
+  const primaryRes = await env.ASSETS.fetch(new Request(primaryUrl, request));
+  if (primaryRes.status !== 404) {
+    return primaryRes;
+  }
+
+  // Fallback if Wrangler was invoked with --assets=. or --assets=frontend
+  const normalized = targetPath === "/" ? "" : targetPath;
+  for (const prefix of ["/dist", "/frontend/dist"]) {
+    const fallbackUrl = new URL(`${prefix}${normalized || "/"}`, url.origin);
+    const fallbackRes = await env.ASSETS.fetch(new Request(fallbackUrl, request));
+    if (fallbackRes.status !== 404) {
+      return fallbackRes;
+    }
+  }
+
+  return primaryRes;
+}
+
 async function proxyBackendRequest(request, env, url) {
   const backendOrigin = (env.BACKEND_ORIGIN || DEFAULT_BACKEND_ORIGIN)
     .trim()
@@ -148,7 +168,12 @@ export default {
 
     // 3. Serve built static files from frontend/dist via Cloudflare Workers Static Assets
     if (env.ASSETS) {
-      const assetResponse = await env.ASSETS.fetch(request);
+      const assetResponse = await fetchAssetWithDistFallback(
+        env,
+        request,
+        url,
+        pathname
+      );
       if (assetResponse.status !== 404) {
         const effectivePath = pathname === "/" ? "/index.html" : pathname;
         return applyResponseHeaders(assetResponse, effectivePath);
@@ -174,9 +199,11 @@ export default {
       }
 
       // 5. SPA Fallback: Serve compiled /index.html for client-side navigation routes
-      const indexUrl = new URL("/", url.origin);
-      const indexResponse = await env.ASSETS.fetch(
-        new Request(indexUrl, request)
+      const indexResponse = await fetchAssetWithDistFallback(
+        env,
+        request,
+        url,
+        "/"
       );
       return applyResponseHeaders(indexResponse, "/index.html");
     }
