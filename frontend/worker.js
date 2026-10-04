@@ -110,7 +110,7 @@ async function fetchAssetWithDistFallback(env, request, url, targetPath) {
   return primaryRes;
 }
 
-function buildForwardedHeaders(request) {
+function buildForwardedHeaders(request, env) {
   const proxyHeaders = new Headers(request.headers);
   proxyHeaders.delete("host");
 
@@ -122,11 +122,21 @@ function buildForwardedHeaders(request) {
     proxyHeaders.set("X-Forwarded-For", clientIp);
   }
   proxyHeaders.set("X-Forwarded-Proto", "https");
+  if (
+    (env?.DOCSHIELD_MODE || "PROTOTYPE") === "PROTOTYPE" &&
+    !proxyHeaders.has("X-Officer-Key")
+  ) {
+    proxyHeaders.set(
+      "X-Officer-Key",
+      env?.DOCSHIELD_OFFICER_KEY ||
+        "docshield-officer-secret-key-change-in-production"
+    );
+  }
   return proxyHeaders;
 }
 
 async function routeToBackend(request, env, url) {
-  const proxyHeaders = buildForwardedHeaders(request);
+  const proxyHeaders = buildForwardedHeaders(request, env);
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
 
   if (env.DOCSHIELD_BACKEND) {

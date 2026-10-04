@@ -170,13 +170,20 @@ DocShield's React/Vite frontend is configured for Git-based deployment on **Clou
 
 ## Backend Deployment (FastAPI + OpenCV + OCR + dlib)
 
-Because the backend executes native C++ and PyTorch computer vision models (`OpenCV DNN`, `dlib 128-d ResNet`, `Tesseract/EasyOCR`) with a measured **Peak RSS of ~1.26 GB**, it runs on a **Cloudflare Container (`DocShieldBackendContainer`, `standard-2`)** routed via `https://docshield.sivasankar-t1606.workers.dev/api/*`:
+Because the backend executes native C++ and PyTorch computer vision models (`OpenCV DNN`, `dlib 128-d ResNet`, `Tesseract/EasyOCR`) with a measured **Peak RSS of ~1.26 GB**, it is routed via `https://docshield.sivasankar-t1606.workers.dev/api/*` using one of two configurations:
 
-- **Option A — Cloudflare Containers (Primary Production Backend)**:
-  - Routed via `https://docshield.sivasankar-t1606.workers.dev` (`DocShieldBackendContainer` Durable Object on port `8000`).
-  - Uses `backend/Dockerfile` configured in `wrangler.toml`.
-- **Option B — Standalone Docker Container (`backend/Dockerfile` or `Dockerfile`)**:
-  - Can also be deployed on any Docker-compatible container runtime on port `8000`.
+- **Option A — Cloudflare Containers (Workers Paid Plan)**:
+  - Routed directly via `DocShieldBackendContainer` Durable Object on port `8000` using `backend/Dockerfile` configured in `wrangler.toml`.
+  - Deploy with `npm run deploy:container`.
+- **Option B — $0 Free-Tier Cloudflare Tunnel / Standalone Docker Container (`BACKEND_ORIGIN`)**:
+  - For Cloudflare Workers Free Plan ($0/month), run the real FastAPI v2.0.0 backend locally with a Cloudflare Tunnel (`cloudflared`) and automatically update the Worker's `BACKEND_ORIGIN` secret in one command:
+    ```bash
+    npm run tunnel
+    ```
+  - Or deploy `backend/Dockerfile` to any $0 Docker container host (such as Hugging Face Spaces Docker with 16 GB RAM / 2 vCPU free tier on port `8000`) and point `BACKEND_ORIGIN` to the container URL:
+    ```bash
+    npx wrangler secret put BACKEND_ORIGIN
+    ```
 
 See **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** for full step-by-step instructions, resource benchmarks, storage architecture, and security configuration.
 

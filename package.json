@@ -9,7 +9,8 @@
     "preview": "npm --prefix frontend run preview",
     "deploy": "npx wrangler deploy",
     "deploy:worker": "npx wrangler deploy --containers-rollout=none",
-    "deploy:container": "npx wrangler deploy"
+    "deploy:container": "npx wrangler deploy",
+    "tunnel": "powershell -ExecutionPolicy Bypass -File scripts/start-cloudflare-tunnel.ps1"
   },
   "dependencies": {
     "@cloudflare/containers": "^0.3.7"

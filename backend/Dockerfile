@@ -51,7 +51,8 @@ RUN mkdir -p /app/backend /root/.EasyOCR/model && \
     ln -sf /app/backend/data /app/data && \
     if [ -d /app/backend/models_weights/easyocr ]; then \
         cp -f /app/backend/models_weights/easyocr/*.pth /root/.EasyOCR/model/ 2>/dev/null || true; \
-    fi
+    fi && \
+    chmod -R 777 /app/backend/data /root /root/.EasyOCR
 
 EXPOSE 8000
 
