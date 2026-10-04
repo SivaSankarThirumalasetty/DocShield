@@ -101,3 +101,7 @@ Write-Host " DocShield Live on Cloudflare!" -ForegroundColor Green
 Write-Host " Frontend + API Gateway : $FrontendOrigin" -ForegroundColor Green
 Write-Host " Active Tunnel Origin   : $TunnelUrl (PID: $($TunnelProc.Id))" -ForegroundColor Green
 Write-Host "==================================================================" -ForegroundColor Cyan
+
+# Keep process alive so background daemon / terminal session holds the tunnel open
+Wait-Process -Id $TunnelProc.Id
+
