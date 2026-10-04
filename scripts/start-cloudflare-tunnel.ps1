@@ -5,6 +5,7 @@
 # opens a Cloudflare Quick Tunnel (trycloudflare.com), and automatically updates
 # the Cloudflare Worker secret `BACKEND_ORIGIN` on:
 #   https://docshield.sivasankar-t1606.workers.dev
+# Uses Win32_Process WMI creation so background daemons survive terminal exit.
 # ==============================================================================
 
 param(
@@ -21,16 +22,18 @@ Write-Host " DocShield Cloudflare Tunnel + FastAPI v2.0.0 Launcher ($0 Tier)" -F
 Write-Host "==================================================================" -ForegroundColor Cyan
 
 # 1. Locate cloudflared binary
-$CloudflaredPath = "cloudflared"
-if (-not (Get-Command $CloudflaredPath -ErrorAction SilentlyContinue)) {
-    $DefaultPath = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
-    if (Test-Path $DefaultPath) {
-        $CloudflaredPath = $DefaultPath
+$CloudflaredPath = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
+if (-not (Test-Path $CloudflaredPath)) {
+    $Cmd = Get-Command "cloudflared" -ErrorAction SilentlyContinue
+    if ($Cmd) {
+        $CloudflaredPath = $Cmd.Source
     } else {
         Write-Error "cloudflared.exe not found. Install via: winget install Cloudflare.cloudflared"
         exit 1
     }
 }
+
+$StartupInfo = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
 
 # 2. Ensure FastAPI backend is running on 127.0.0.1:$Port
 $BackendHealthy = $false
@@ -43,19 +46,21 @@ try {
 } catch {}
 
 if (-not $BackendHealthy) {
-    Write-Host "[1/3] Starting FastAPI v2.0.0 backend on http://127.0.0.1:$Port ..." -ForegroundColor Yellow
-    $env:DOCSHIELD_ENV = "production"
-    $env:DOCSHIELD_MODE = "PROTOTYPE"
-    $env:FRONTEND_ORIGIN = $FrontendOrigin
-    Start-Process -FilePath "py" -ArgumentList "-3.11", "-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", "$Port" -WorkingDirectory $RepoRoot -WindowStyle Minimized
+    Write-Host "[1/3] Starting detached FastAPI v2.0.0 backend on http://127.0.0.1:$Port ..." -ForegroundColor Yellow
+    $UvicornCmd = "cmd.exe /c `"set DOCSHIELD_ENV=production&& set DOCSHIELD_MODE=PROTOTYPE&& set FRONTEND_ORIGIN=$FrontendOrigin&& py -3.11 -m uvicorn backend.main:app --host 127.0.0.1 --port $Port`""
+    $UvicornWmi = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+        CommandLine = $UvicornCmd
+        CurrentDirectory = $RepoRoot
+        ProcessStartupInformation = $StartupInfo
+    }
 
-    for ($i = 0; $i -lt 20; $i++) {
+    for ($i = 0; $i -lt 25; $i++) {
         Start-Sleep -Seconds 1
         try {
             $HealthCheck = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/health" -Method Get -TimeoutSec 2
             if ($HealthCheck.status -eq "healthy") {
                 $BackendHealthy = $true
-                Write-Host "      FastAPI backend ready on http://127.0.0.1:$Port" -ForegroundColor Green
+                Write-Host "      FastAPI backend ready on http://127.0.0.1:$Port (PID: $($UvicornWmi.ProcessId))" -ForegroundColor Green
                 break
             }
         } catch {}
@@ -66,12 +71,20 @@ if (-not $BackendHealthy) {
     }
 }
 
-# 3. Launch Cloudflare Quick Tunnel and capture URL
+# 3. Stop any stale cloudflared quick-tunnel processes and start a fresh detached tunnel
+Get-Process -Name "cloudflared" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 500
+
 $TunnelLog = Join-Path $env:TEMP "docshield-cloudflared.log"
 if (Test-Path $TunnelLog) { Remove-Item $TunnelLog -Force }
 
-Write-Host "[2/3] Starting Cloudflare Tunnel to http://127.0.0.1:$Port ..." -ForegroundColor Yellow
-$TunnelProc = Start-Process -FilePath $CloudflaredPath -ArgumentList "tunnel", "--url", "http://127.0.0.1:$Port", "--no-autoupdate", "--logfile", $TunnelLog -PassThru -WindowStyle Minimized
+Write-Host "[2/3] Starting detached Cloudflare Tunnel to http://127.0.0.1:$Port ..." -ForegroundColor Yellow
+$TunnelCmd = "`"$CloudflaredPath`" tunnel --url http://127.0.0.1:$Port --no-autoupdate --logfile `"$TunnelLog`""
+$TunnelWmi = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+    CommandLine = $TunnelCmd
+    CurrentDirectory = $RepoRoot
+    ProcessStartupInformation = $StartupInfo
+}
 
 $TunnelUrl = $null
 for ($i = 0; $i -lt 30; $i++) {
@@ -90,7 +103,7 @@ if (-not $TunnelUrl) {
     exit 1
 }
 
-Write-Host "      Cloudflare Tunnel active: $TunnelUrl" -ForegroundColor Green
+Write-Host "      Cloudflare Tunnel active: $TunnelUrl (PID: $($TunnelWmi.ProcessId))" -ForegroundColor Green
 
 # 4. Update Cloudflare Worker BACKEND_ORIGIN secret
 Write-Host "[3/3] Updating Cloudflare Worker BACKEND_ORIGIN secret ..." -ForegroundColor Yellow
@@ -99,9 +112,5 @@ $TunnelUrl | npx wrangler secret put BACKEND_ORIGIN
 Write-Host "==================================================================" -ForegroundColor Cyan
 Write-Host " DocShield Live on Cloudflare!" -ForegroundColor Green
 Write-Host " Frontend + API Gateway : $FrontendOrigin" -ForegroundColor Green
-Write-Host " Active Tunnel Origin   : $TunnelUrl (PID: $($TunnelProc.Id))" -ForegroundColor Green
+Write-Host " Active Tunnel Origin   : $TunnelUrl (PID: $($TunnelWmi.ProcessId))" -ForegroundColor Green
 Write-Host "==================================================================" -ForegroundColor Cyan
-
-# Keep process alive so background daemon / terminal session holds the tunnel open
-Wait-Process -Id $TunnelProc.Id
-
