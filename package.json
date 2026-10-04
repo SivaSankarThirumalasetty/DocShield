@@ -7,6 +7,11 @@
     "dev": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend ci && npm --prefix frontend run build",
     "preview": "npm --prefix frontend run preview",
-    "deploy": "npx wrangler deploy"
+    "deploy": "npx wrangler deploy",
+    "deploy:worker": "npx wrangler deploy --containers-rollout=none",
+    "deploy:container": "npx wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.7"
   }
 }

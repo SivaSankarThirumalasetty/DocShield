@@ -1,9 +1,35 @@
 /**
- * Cloudflare Worker entrypoint for DocShield Production Frontend & API Gateway.
- * (Located in frontend/worker.js to support Cloudflare Workers Builds when Root directory = "frontend")
+ * Cloudflare Worker & Container entrypoint for DocShield Production Frontend & API Gateway.
+ * Mirrors repository root worker.js for deployments executed from frontend/.
  */
 
+import { Container, getContainer } from "@cloudflare/containers";
+
 const DEFAULT_BACKEND_ORIGIN = "https://docshield-production.up.railway.app";
+const CONTAINER_SINGLETON_NAME = "docshield-api-singleton";
+
+export class DocShieldBackendContainer extends Container {
+  defaultPort = 8000;
+  sleepAfter = "15m";
+  pingEndpoint = "localhost/health";
+  enableInternet = true;
+
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.envVars = {
+      PORT: "8000",
+      HOST: "0.0.0.0",
+      DOCSHIELD_ENV: env?.DOCSHIELD_ENV || "production",
+      DOCSHIELD_MODE: env?.DOCSHIELD_MODE || "PROTOTYPE",
+      FRONTEND_ORIGIN:
+        env?.FRONTEND_ORIGIN ||
+        "https://docshield.sivasankar-t1606.workers.dev",
+      ...(env?.DOCSHIELD_OFFICER_KEY
+        ? { DOCSHIELD_OFFICER_KEY: env.DOCSHIELD_OFFICER_KEY }
+        : {}),
+    };
+  }
+}
 
 const MIME_BY_EXTENSION = {
   ".js": "application/javascript; charset=utf-8",
@@ -46,7 +72,10 @@ function applyResponseHeaders(response, pathname) {
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("X-Frame-Options", "DENY");
   headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  headers.set("Permissions-Policy", "camera=(self), microphone=(), geolocation=()");
+  headers.set(
+    "Permissions-Policy",
+    "camera=(self), microphone=(), geolocation=()"
+  );
 
   if (pathname.startsWith("/assets/")) {
     headers.set("Cache-Control", "public, max-age=31536000, immutable");
@@ -68,11 +97,12 @@ async function fetchAssetWithDistFallback(env, request, url, targetPath) {
     return primaryRes;
   }
 
-  // Fallback if Wrangler was invoked with --assets=. or --assets=frontend
   const normalized = targetPath === "/" ? "" : targetPath;
   for (const prefix of ["/dist", "/frontend/dist"]) {
     const fallbackUrl = new URL(`${prefix}${normalized || "/"}`, url.origin);
-    const fallbackRes = await env.ASSETS.fetch(new Request(fallbackUrl, request));
+    const fallbackRes = await env.ASSETS.fetch(
+      new Request(fallbackUrl, request)
+    );
     if (fallbackRes.status !== 404) {
       return fallbackRes;
     }
@@ -81,36 +111,105 @@ async function fetchAssetWithDistFallback(env, request, url, targetPath) {
   return primaryRes;
 }
 
-async function proxyBackendRequest(request, env, url) {
-  const backendOrigin = (env.BACKEND_ORIGIN || DEFAULT_BACKEND_ORIGIN)
-    .trim()
-    .replace(/\/+$/, "");
-
-  const targetUrl = `${backendOrigin}${url.pathname}${url.search}`;
+function buildForwardedHeaders(request) {
   const proxyHeaders = new Headers(request.headers);
   proxyHeaders.delete("host");
 
-  const clientIp = request.headers.get("CF-Connecting-IP");
+  const clientIp =
+    request.headers.get("CF-Connecting-IP") ||
+    request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim();
   if (clientIp) {
     proxyHeaders.set("CF-Connecting-IP", clientIp);
     proxyHeaders.set("X-Forwarded-For", clientIp);
   }
   proxyHeaders.set("X-Forwarded-Proto", "https");
+  return proxyHeaders;
+}
 
+async function routeToBackend(request, env, url) {
+  const proxyHeaders = buildForwardedHeaders(request);
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+
+  if (env.DOCSHIELD_BACKEND) {
+    const fallbackClone = hasBody ? request.clone() : null;
+    try {
+      const containerStub = getContainer(
+        env.DOCSHIELD_BACKEND,
+        CONTAINER_SINGLETON_NAME
+      );
+      const containerUrl = `http://localhost:8000${url.pathname}${url.search}`;
+      const containerReq = new Request(containerUrl, {
+        method: request.method,
+        headers: proxyHeaders,
+        body: hasBody ? request.body : undefined,
+        redirect: "manual",
+      });
+      const containerRes = await containerStub.fetch(containerReq);
+      if (containerRes.status < 502) {
+        const responseHeaders = new Headers(containerRes.headers);
+        responseHeaders.set("X-Content-Type-Options", "nosniff");
+        responseHeaders.set("X-DocShield-Backend", "cloudflare-container");
+        return new Response(containerRes.body, {
+          status: containerRes.status,
+          statusText: containerRes.statusText,
+          headers: responseHeaders,
+        });
+      }
+    } catch (_) {
+      // Fall through to BACKEND_ORIGIN
+    }
+
+    if (fallbackClone) {
+      request = fallbackClone;
+    }
+  }
+
+  const backendOrigin = (env.BACKEND_ORIGIN || DEFAULT_BACKEND_ORIGIN)
+    .trim()
+    .replace(/\/+$/, "");
+
+  const targetUrl = `${backendOrigin}${url.pathname}${url.search}`;
   const init = {
     method: request.method,
     headers: proxyHeaders,
     redirect: "manual",
   };
 
-  if (request.method !== "GET" && request.method !== "HEAD") {
+  if (hasBody) {
     init.body = request.body;
   }
 
   try {
     const upstream = await fetch(targetUrl, init);
+    if (
+      url.pathname === "/ready" &&
+      (upstream.headers.get("content-type") || "").includes("text/html")
+    ) {
+      const healthRes = await fetch(`${backendOrigin}/api/health`, {
+        method: "GET",
+        headers: proxyHeaders,
+      });
+      const healthJson = await healthRes.json();
+      return new Response(
+        JSON.stringify({
+          status: healthJson.status === "healthy" ? "ready" : "degraded",
+          mode: env.DOCSHIELD_MODE || "PROTOTYPE",
+          checks: healthJson.modules || {},
+          timestamp: healthJson.timestamp || new Date().toISOString(),
+        }),
+        {
+          status: healthRes.status,
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "X-Content-Type-Options": "nosniff",
+            "X-DocShield-Backend": "origin-proxy",
+          },
+        }
+      );
+    }
     const responseHeaders = new Headers(upstream.headers);
     responseHeaders.set("X-Content-Type-Options", "nosniff");
+    responseHeaders.set("X-DocShield-Backend", "origin-proxy");
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
@@ -138,16 +237,14 @@ export default {
     const url = new URL(request.url);
     const { pathname } = url;
 
-    // 1. Proxy API & Health endpoints to the FastAPI backend
     if (
       pathname.startsWith("/api/") ||
       pathname === "/health" ||
       pathname === "/ready"
     ) {
-      return proxyBackendRequest(request, env, url);
+      return routeToBackend(request, env, url);
     }
 
-    // 2. Never serve raw development source paths (/src/*) in production
     if (pathname.startsWith("/src/")) {
       return new Response("Not Found", {
         status: 404,
@@ -158,7 +255,6 @@ export default {
       });
     }
 
-    // 3. Serve built static files from dist via Cloudflare Workers Static Assets
     if (env.ASSETS) {
       const assetResponse = await fetchAssetWithDistFallback(
         env,
@@ -171,7 +267,6 @@ export default {
         return applyResponseHeaders(assetResponse, effectivePath);
       }
 
-      // 4. Do NOT return index.html for missing JS, CSS, image, or file-extension requests
       const isStaticAssetRequest =
         pathname.startsWith("/assets/") ||
         pathname.startsWith("/samples/") ||
@@ -190,7 +285,6 @@ export default {
         });
       }
 
-      // 5. SPA Fallback: Serve compiled /index.html for client-side navigation routes
       const indexResponse = await fetchAssetWithDistFallback(
         env,
         request,

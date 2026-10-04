@@ -10,9 +10,10 @@
     "deploy": "npx wrangler deploy"
   },
   "dependencies": {
+    "@cloudflare/containers": "^0.3.7",
+    "lucide-react": "^0.453.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "lucide-react": "^0.453.0"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.2",

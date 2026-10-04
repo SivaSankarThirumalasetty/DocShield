@@ -1,5 +1,5 @@
-# Cloudflare Worker Configuration for DocShield (when Root Directory = "frontend")
-# Deploys the compiled Vite production build (./dist) via Cloudflare Workers Static Assets
+# Cloudflare Worker & Container Configuration for DocShield (Frontend Directory)
+# Mirrors repository root wrangler.toml for commands executed inside frontend/
 name = "docshield"
 main = "worker.js"
 compatibility_date = "2025-04-01"
@@ -14,4 +14,21 @@ not_found_handling = "none"
 run_worker_first = true
 
 [vars]
+DOCSHIELD_ENV = "production"
+DOCSHIELD_MODE = "PROTOTYPE"
+FRONTEND_ORIGIN = "https://docshield.sivasankar-t1606.workers.dev"
 BACKEND_ORIGIN = "https://docshield-production.up.railway.app"
+
+[[containers]]
+class_name = "DocShieldBackendContainer"
+image = "../backend/Dockerfile"
+instance_type = "standard-2"
+max_instances = 2
+
+[[durable_objects.bindings]]
+name = "DOCSHIELD_BACKEND"
+class_name = "DocShieldBackendContainer"
+
+[[migrations]]
+new_sqlite_classes = ["DocShieldBackendContainer"]
+tag = "v1"
