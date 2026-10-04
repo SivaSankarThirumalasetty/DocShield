@@ -135,30 +135,90 @@ function buildForwardedHeaders(request, env) {
   return proxyHeaders;
 }
 
+function getAllowedOrigin(request, env) {
+  const origin = request.headers.get("Origin");
+  if (!origin) return null;
+  const configuredOrigin = (
+    env?.FRONTEND_ORIGIN || "https://docshield.sivasankar-t1606.workers.dev"
+  )
+    .trim()
+    .replace(/\/+$/, "");
+  const allowed = new Set([
+    configuredOrigin,
+    "https://docshield.sivasankar-t1606.workers.dev",
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+  ]);
+  return allowed.has(origin) ? origin : null;
+}
+
+function attachCorsHeaders(headers, allowedOrigin) {
+  if (allowedOrigin) {
+    headers.set("Access-Control-Allow-Origin", allowedOrigin);
+    headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    headers.set(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Accept, X-Officer-Key, X-Session-Token, Cache-Control"
+    );
+    headers.set("Access-Control-Max-Age", "600");
+    headers.set("Vary", "Origin");
+  }
+}
+
 async function routeToBackend(request, env, url) {
+  const allowedOrigin = getAllowedOrigin(request, env);
+
+  if (request.method === "OPTIONS") {
+    const optHeaders = new Headers({
+      "X-Content-Type-Options": "nosniff",
+      "X-DocShield-Backend": "cloudflare-worker",
+    });
+    attachCorsHeaders(optHeaders, allowedOrigin);
+    return new Response(null, { status: 200, headers: optHeaders });
+  }
+
   const contentLength = Number(request.headers.get("Content-Length") || "0");
   if (contentLength > 10 * 1024 * 1024) {
+    const errHeaders = new Headers({
+      "Content-Type": "application/json; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+      "X-DocShield-Backend": "cloudflare-worker",
+    });
+    attachCorsHeaders(errHeaders, allowedOrigin);
     return new Response(
       JSON.stringify({
         detail: "File size exceeds maximum allowed limit of 10MB.",
       }),
-      {
-        status: 413,
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          "X-Content-Type-Options": "nosniff",
-          "X-DocShield-Backend": "cloudflare-worker",
-        },
-      }
+      { status: 413, headers: errHeaders }
+    );
+  }
+
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  const bodyBuffer = hasBody ? await request.arrayBuffer() : undefined;
+  if (bodyBuffer && bodyBuffer.byteLength > 10 * 1024 * 1024) {
+    const errHeaders = new Headers({
+      "Content-Type": "application/json; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+      "X-DocShield-Backend": "cloudflare-worker",
+    });
+    attachCorsHeaders(errHeaders, allowedOrigin);
+    return new Response(
+      JSON.stringify({
+        detail: "File size exceeds maximum allowed limit of 10MB.",
+      }),
+      { status: 413, headers: errHeaders }
     );
   }
 
   const proxyHeaders = buildForwardedHeaders(request, env);
-  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  if (bodyBuffer) {
+    proxyHeaders.set("Content-Length", String(bodyBuffer.byteLength));
+  }
 
-  if (env.DOCSHIELD_BACKEND) {
-    const fallbackClone =
-      hasBody && env.BACKEND_ORIGIN ? request.clone() : null;
+  const backendOrigin = (env.BACKEND_ORIGIN || "").trim().replace(/\/+$/, "");
+
+  if (env.DOCSHIELD_BACKEND && !backendOrigin) {
     try {
       const containerStub = getContainer(
         env.DOCSHIELD_BACKEND,
@@ -168,7 +228,7 @@ async function routeToBackend(request, env, url) {
       const containerReq = new Request(containerUrl, {
         method: request.method,
         headers: proxyHeaders,
-        body: hasBody ? request.body : undefined,
+        body: bodyBuffer,
         redirect: "manual",
       });
       const containerRes = await containerStub.fetch(containerReq);
@@ -176,75 +236,89 @@ async function routeToBackend(request, env, url) {
         const responseHeaders = new Headers(containerRes.headers);
         responseHeaders.set("X-Content-Type-Options", "nosniff");
         responseHeaders.set("X-DocShield-Backend", "cloudflare-container");
+        attachCorsHeaders(responseHeaders, allowedOrigin);
         return new Response(containerRes.body, {
           status: containerRes.status,
           statusText: containerRes.statusText,
           headers: responseHeaders,
         });
       }
-    } catch (_) {
-      // Fall through if optional BACKEND_ORIGIN secret is configured
-    }
-
-    if (fallbackClone) {
-      request = fallbackClone;
-    }
+    } catch (_) {}
   }
 
-  const backendOrigin = (env.BACKEND_ORIGIN || "").trim().replace(/\/+$/, "");
   if (backendOrigin) {
     const targetUrl = `${backendOrigin}${url.pathname}${url.search}`;
-    const init = {
-      method: request.method,
-      headers: proxyHeaders,
-      redirect: "manual",
-    };
-
-    if (hasBody) {
-      init.body = request.body;
-    }
-
-    try {
-      const upstream = await fetch(targetUrl, init);
-      if (
-        url.pathname === "/ready" &&
-        (upstream.headers.get("content-type") || "").includes("text/html")
-      ) {
-        const healthRes = await fetch(`${backendOrigin}/api/health`, {
-          method: "GET",
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const upstream = await fetch(targetUrl, {
+          method: request.method,
           headers: proxyHeaders,
+          body: bodyBuffer,
+          redirect: "manual",
         });
-        const healthJson = await healthRes.json();
-        return new Response(
-          JSON.stringify({
-            status: healthJson.status === "healthy" ? "ready" : "degraded",
-            mode: env.DOCSHIELD_MODE || "PROTOTYPE",
-            checks: healthJson.modules || {},
-            timestamp: healthJson.timestamp || new Date().toISOString(),
-          }),
-          {
-            status: healthRes.status,
-            headers: {
-              "Content-Type": "application/json; charset=utf-8",
-              "X-Content-Type-Options": "nosniff",
-              "X-DocShield-Backend": "cloudflare-worker",
-            },
-          }
-        );
+
+        if (
+          (upstream.status === 502 ||
+            upstream.status === 503 ||
+            upstream.status === 504 ||
+            upstream.status === 522 ||
+            upstream.status === 530) &&
+          attempt < 2
+        ) {
+          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+          continue;
+        }
+
+        if (
+          url.pathname === "/ready" &&
+          (upstream.headers.get("content-type") || "").includes("text/html")
+        ) {
+          const healthRes = await fetch(`${backendOrigin}/api/health`, {
+            method: "GET",
+            headers: proxyHeaders,
+          });
+          const healthJson = await healthRes.json();
+          const readyHeaders = new Headers({
+            "Content-Type": "application/json; charset=utf-8",
+            "X-Content-Type-Options": "nosniff",
+            "X-DocShield-Backend": "cloudflare-worker",
+          });
+          attachCorsHeaders(readyHeaders, allowedOrigin);
+          return new Response(
+            JSON.stringify({
+              status: healthJson.status === "healthy" ? "ready" : "degraded",
+              mode: env.DOCSHIELD_MODE || "PROTOTYPE",
+              checks: healthJson.modules || {},
+              timestamp: healthJson.timestamp || new Date().toISOString(),
+            }),
+            { status: healthRes.status, headers: readyHeaders }
+          );
+        }
+
+        const responseHeaders = new Headers(upstream.headers);
+        responseHeaders.set("X-Content-Type-Options", "nosniff");
+        responseHeaders.set("X-DocShield-Backend", "cloudflare-worker");
+        attachCorsHeaders(responseHeaders, allowedOrigin);
+        return new Response(upstream.body, {
+          status: upstream.status,
+          statusText: upstream.statusText,
+          headers: responseHeaders,
+        });
+      } catch (_) {
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+          continue;
+        }
       }
-      const responseHeaders = new Headers(upstream.headers);
-      responseHeaders.set("X-Content-Type-Options", "nosniff");
-      responseHeaders.set("X-DocShield-Backend", "cloudflare-worker");
-      return new Response(upstream.body, {
-        status: upstream.status,
-        statusText: upstream.statusText,
-        headers: responseHeaders,
-      });
-    } catch (_) {
-      // Fall through to 502 error response
     }
   }
 
+  const err502Headers = new Headers({
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+  });
+  attachCorsHeaders(err502Headers, allowedOrigin);
   return new Response(
     JSON.stringify({
       detail:
@@ -252,10 +326,7 @@ async function routeToBackend(request, env, url) {
     }),
     {
       status: 502,
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "Cache-Control": "no-store",
-      },
+      headers: err502Headers,
     }
   );
 }

@@ -46,8 +46,8 @@ try {
 } catch {}
 
 if (-not $BackendHealthy) {
-    Write-Host "[1/3] Starting detached FastAPI v2.0.0 backend on http://127.0.0.1:$Port ..." -ForegroundColor Yellow
-    $UvicornCmd = "cmd.exe /c `"set DOCSHIELD_ENV=production&& set DOCSHIELD_MODE=PROTOTYPE&& set FRONTEND_ORIGIN=$FrontendOrigin&& py -3.11 -m uvicorn backend.main:app --host 127.0.0.1 --port $Port`""
+    Write-Host "[1/3] Starting detached FastAPI v2.0.0 backend on http://0.0.0.0:$Port ..." -ForegroundColor Yellow
+    $UvicornCmd = "cmd.exe /c `"set DOCSHIELD_ENV=production&& set DOCSHIELD_MODE=PROTOTYPE&& set FRONTEND_ORIGIN=$FrontendOrigin&& py -3.11 -m uvicorn backend.main:app --host 0.0.0.0 --port $Port`""
     $UvicornWmi = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
         CommandLine = $UvicornCmd
         CurrentDirectory = $RepoRoot
@@ -60,26 +60,26 @@ if (-not $BackendHealthy) {
             $HealthCheck = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/health" -Method Get -TimeoutSec 2
             if ($HealthCheck.status -eq "healthy") {
                 $BackendHealthy = $true
-                Write-Host "      FastAPI backend ready on http://127.0.0.1:$Port (PID: $($UvicornWmi.ProcessId))" -ForegroundColor Green
+                Write-Host "      FastAPI backend ready on http://0.0.0.0:$Port (PID: $($UvicornWmi.ProcessId))" -ForegroundColor Green
                 break
             }
         } catch {}
     }
     if (-not $BackendHealthy) {
-        Write-Error "FastAPI backend failed to become healthy on http://127.0.0.1:$Port"
+        Write-Error "FastAPI backend failed to become healthy on http://0.0.0.1:$Port"
         exit 1
     }
 }
 
-# 3. Stop any stale cloudflared quick-tunnel processes and start a fresh detached tunnel
+# 3. Stop any stale cloudflared quick-tunnel processes and start a fresh detached HTTP/2 IPv4 tunnel
 Get-Process -Name "cloudflared" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 
 $TunnelLog = Join-Path $env:TEMP "docshield-cloudflared.log"
 if (Test-Path $TunnelLog) { Remove-Item $TunnelLog -Force }
 
-Write-Host "[2/3] Starting detached Cloudflare Tunnel to http://127.0.0.1:$Port ..." -ForegroundColor Yellow
-$TunnelCmd = "`"$CloudflaredPath`" tunnel --url http://127.0.0.1:$Port --no-autoupdate --logfile `"$TunnelLog`""
+Write-Host "[2/3] Starting detached Cloudflare Tunnel (HTTP/2 IPv4) to http://127.0.0.1:$Port ..." -ForegroundColor Yellow
+$TunnelCmd = "`"$CloudflaredPath`" tunnel --url http://127.0.0.1:$Port --no-autoupdate --protocol http2 --edge-ip-version 4 --logfile `"$TunnelLog`""
 $TunnelWmi = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
     CommandLine = $TunnelCmd
     CurrentDirectory = $RepoRoot
