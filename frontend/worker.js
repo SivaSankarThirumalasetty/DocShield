@@ -258,15 +258,17 @@ async function routeToBackend(request, env, url) {
         });
 
         if (
-          (upstream.status === 502 ||
-            upstream.status === 503 ||
-            upstream.status === 504 ||
-            upstream.status === 522 ||
-            upstream.status === 530) &&
-          attempt < 2
+          upstream.status === 502 ||
+          upstream.status === 503 ||
+          upstream.status === 504 ||
+          upstream.status === 522 ||
+          upstream.status === 530
         ) {
-          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
-          continue;
+          if (attempt < 2) {
+            await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+            continue;
+          }
+          break;
         }
 
         if (

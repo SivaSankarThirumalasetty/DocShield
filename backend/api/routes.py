@@ -64,6 +64,7 @@ async def liveness_probe():
     }
 
 @router.get("/ready")
+@router.get("/api/ready")
 async def readiness_probe():
     """Readiness probe: validates database connection and critical subsystem dependencies."""
     checks = {
