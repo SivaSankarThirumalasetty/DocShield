@@ -1,8 +1,9 @@
-# Node
+# Node & Wrangler
 node_modules/
 frontend/node_modules/
 .npm
 .vite
+.wrangler/
 
 # Python
 __pycache__/
