@@ -30,8 +30,22 @@ export default function App() {
   const [reviewStatusMsg, setReviewStatusMsg] = useState(null);
 
   useEffect(() => {
-    fetchHealth();
-  }, []);
+    let active = true;
+    const poll = async () => {
+      try {
+        const data = await checkHealth();
+        if (active) setHealth(data);
+      } catch {
+        if (active) setHealth((prev) => (prev?.status === "healthy" ? prev : { status: "offline" }));
+      }
+    };
+    poll();
+    const interval = setInterval(poll, health?.status === "healthy" ? 30000 : 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [health?.status]);
 
   const fetchHealth = async () => {
     try {

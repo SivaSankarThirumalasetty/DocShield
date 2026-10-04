@@ -19,7 +19,8 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8000 \
-    HOST=0.0.0.0
+    HOST=0.0.0.0 \
+    EASYOCR_MODULE_PATH=/root/.EasyOCR
 
 # Install system dependencies for OpenCV, Tesseract OCR, dlib, and build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -48,12 +49,14 @@ COPY backend/ ./backend/
 COPY models_weights/ ./models_weights/
 COPY data/ ./data/
 COPY sample_data/ ./sample_data/
+RUN mkdir -p /root/.EasyOCR/model && \
+    cp -f /app/models_weights/easyocr/*.pth /root/.EasyOCR/model/ 2>/dev/null || true
 
 # Copy compiled frontend from Stage 1 into frontend/dist
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 RUN mkdir -p ./frontend/dist/samples && cp sample_data/*.png ./frontend/dist/samples/ 2>/dev/null || true
 
-# Expose default port (Railway/Render provide dynamic $PORT at runtime)
+# Expose default port (Cloudflare Containers / Docker provide dynamic $PORT at runtime)
 EXPOSE 8000
 
 # Healthcheck

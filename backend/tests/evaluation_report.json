@@ -2,10 +2,10 @@
   "statement": "Not validated for production accuracy.",
   "sample_count": 3,
   "ocr_rate_pct": 100.0,
-  "classification_accuracy_pct": 33.33333333333333,
-  "checksum_accuracy_pct": 33.33333333333333,
+  "classification_accuracy_pct": 100.0,
+  "checksum_accuracy_pct": 66.66666666666666,
   "face_detection_pct": 100.0,
-  "mean_latency_ms": 2388.7999999999997,
+  "mean_latency_ms": 3010.6666666666665,
   "detailed_results": [
     {
       "file": "passport_sample.png",
@@ -20,46 +20,46 @@
       "checksum_validation_correct": false,
       "tamper_ela_score": 3.3,
       "face_detected": true,
-      "face_verdict": "INDETERMINATE",
-      "risk_score": 60,
+      "face_verdict": "MATCH",
+      "risk_score": 35,
       "risk_tier": "MEDIUM",
-      "processing_time_ms": 4144.4
+      "processing_time_ms": 4689.0
     },
     {
       "file": "aadhaar_valid.png",
       "expected_type": "AADHAAR",
-      "detected_type": "UNKNOWN",
-      "classification_correct": false,
+      "detected_type": "AADHAAR",
+      "classification_correct": true,
       "ocr_success": true,
       "ocr_confidence": 68.1,
-      "extracted_doc_number": null,
+      "extracted_doc_number": "XXXX-XXXX-6125",
       "validation_valid": true,
       "expected_valid": true,
       "checksum_validation_correct": true,
       "tamper_ela_score": 5.7,
       "face_detected": true,
-      "face_verdict": "INDETERMINATE",
-      "risk_score": 45,
-      "risk_tier": "MEDIUM",
-      "processing_time_ms": 1530.5
+      "face_verdict": "MATCH",
+      "risk_score": 0,
+      "risk_tier": "LOW",
+      "processing_time_ms": 2210.7
     },
     {
       "file": "aadhaar_invalid_checksum.png",
       "expected_type": "AADHAAR",
-      "detected_type": "UNKNOWN",
-      "classification_correct": false,
+      "detected_type": "AADHAAR",
+      "classification_correct": true,
       "ocr_success": true,
       "ocr_confidence": 69.0,
-      "extracted_doc_number": null,
-      "validation_valid": true,
+      "extracted_doc_number": "XXXX-XXXX-6129",
+      "validation_valid": false,
       "expected_valid": false,
-      "checksum_validation_correct": false,
+      "checksum_validation_correct": true,
       "tamper_ela_score": 5.7,
       "face_detected": true,
-      "face_verdict": "INDETERMINATE",
-      "risk_score": 45,
+      "face_verdict": "MATCH",
+      "risk_score": 35,
       "risk_tier": "MEDIUM",
-      "processing_time_ms": 1491.5
+      "processing_time_ms": 2132.3
     }
   ]
 }

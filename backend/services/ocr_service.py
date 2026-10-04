@@ -17,10 +17,12 @@ try:
 except ImportError:
     EASYOCR_AVAILABLE = False
 
+from pathlib import Path
+
 COMMON_TESSERACT_PATHS = [
     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
     r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-    r"C:\Users\sivas\AppData\Local\Programs\Tesseract-OCR\tesseract.exe",
+    str(Path.home() / "AppData" / "Local" / "Programs" / "Tesseract-OCR" / "tesseract.exe"),
     "/usr/bin/tesseract",
     "/usr/local/bin/tesseract",
     "/bin/tesseract",
@@ -61,7 +63,23 @@ class OCRService:
     def _get_easyocr_reader(self):
         if self.easyocr_reader is None and EASYOCR_AVAILABLE:
             try:
-                self.easyocr_reader = easyocr.Reader(['en'], gpu=False)
+                model_dir = None
+                for candidate in [
+                    Path(__file__).resolve().parent.parent / "models_weights" / "easyocr",
+                    Path.cwd() / "backend" / "models_weights" / "easyocr",
+                    Path.cwd() / "models_weights" / "easyocr",
+                    Path("/app/backend/models_weights/easyocr"),
+                    Path("/app/models_weights/easyocr"),
+                ]:
+                    if (candidate / "craft_mlt_25k.pth").exists() and (candidate / "english_g2.pth").exists():
+                        model_dir = str(candidate)
+                        break
+                self.easyocr_reader = easyocr.Reader(
+                    ['en'],
+                    gpu=False,
+                    model_storage_directory=model_dir,
+                    verbose=False,
+                )
             except Exception as e:
                 logger.warning(f"Could not initialize EasyOCR reader: {e}")
         return self.easyocr_reader

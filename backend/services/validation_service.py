@@ -68,6 +68,16 @@ class ValidationService:
                     severity="info",
                     evidence_state="PASS"
                 ))
+                if doc_info.verhoeff_valid is not None:
+                    is_verhoeff = bool(doc_info.verhoeff_valid)
+                    flags.append(ValidationFlag(
+                        check_name="Verhoeff Checksum",
+                        field="document_number",
+                        passed=is_verhoeff,
+                        message="Aadhaar Verhoeff checksum algorithm verified (evaluated prior to redaction)" if is_verhoeff else "Aadhaar Verhoeff checksum failed: invalid card structure",
+                        severity="info" if is_verhoeff else "critical",
+                        evidence_state="PASS" if is_verhoeff else "FAIL"
+                    ))
             else:
                 digits_only = "".join(c for c in doc_num if c.isdigit())
                 if len(digits_only) == 12:

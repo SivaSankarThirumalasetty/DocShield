@@ -76,7 +76,7 @@ def validate_image_upload(raw_bytes: bytes, field_name: str = "document") -> Ima
     if len(raw_bytes) > settings.max_upload_size_bytes:
         logger.warning(f"Upload rejected: {field_name} size ({len(raw_bytes)} bytes) exceeds limit.")
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=getattr(status, "HTTP_413_CONTENT_TOO_LARGE", 413),
             detail=f"Uploaded {field_name} exceeds maximum allowed size of {settings.max_upload_size_bytes // (1024 * 1024)}MB."
         )
 

@@ -1,0 +1,33 @@
+# Cloudflare Worker & Container Configuration for DocShield (Frontend Directory)
+# Mirrors repository root wrangler.toml for commands executed inside frontend/
+name = "docshield"
+main = "worker.js"
+compatibility_date = "2025-04-01"
+
+[build]
+command = "npm run build"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "none"
+run_worker_first = true
+
+[vars]
+DOCSHIELD_ENV = "production"
+DOCSHIELD_MODE = "PROTOTYPE"
+FRONTEND_ORIGIN = "https://docshield.sivasankar-t1606.workers.dev"
+
+[[containers]]
+class_name = "DocShieldBackendContainer"
+image = "../backend/Dockerfile"
+instance_type = "standard-2"
+max_instances = 2
+
+[[durable_objects.bindings]]
+name = "DOCSHIELD_BACKEND"
+class_name = "DocShieldBackendContainer"
+
+[[migrations]]
+new_sqlite_classes = ["DocShieldBackendContainer"]
+tag = "v1"

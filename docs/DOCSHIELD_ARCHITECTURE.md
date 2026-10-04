@@ -2,7 +2,7 @@
 **Document Version:** 2.0.0  
 **Status:** Approved Architectural Blueprint (Pre-Implementation)  
 **Author:** Principal Software Architect & Senior DevSecOps Engineer  
-**Target Systems:** Public Prototype, Cloud Container Environments (Railway/Render), Future Enterprise/Gov Deployments  
+**Target Systems:** Public Prototype, Cloudflare Workers & Containers (Docker), Future Enterprise/Gov Deployments  
 
 ---
 
@@ -268,7 +268,7 @@ All API endpoints reside under the `/api/v1` namespace.
 
 ### 1. Health & Readiness Probes
 - `GET /api/v1/health`
-  - **Purpose:** Kubernetes / Railway / Render lightweight liveness check.
+  - **Purpose:** Cloudflare Containers / Kubernetes lightweight liveness check.
   - **Response (200 OK):** `{"status": "pass", "version": "2.0.0", "mode": "PROTOTYPE"}`
   - **Latency:** < 5ms (no database or model queries).
 - `GET /api/v1/readiness`
@@ -398,7 +398,7 @@ Every service adheres strictly to safe degradation principles:
 
 ## 9. SINGLE-CONTAINER DEPLOYMENT ARCHITECTURE
 
-To guarantee that DocShield deploys to Railway, Render, or a single virtual server with zero manual orchestration:
+To guarantee that DocShield deploys to Cloudflare Containers or a standalone Docker host with zero manual orchestration:
 
 ```
 +---------------------------------------------------------------------------------------------------+
@@ -422,7 +422,7 @@ To guarantee that DocShield deploys to Railway, Render, or a single virtual serv
 |  | - Serves `/api/v1/*` routes dynamically                                                     |  |
 |  | - Serves `/app/frontend/dist` as static assets for `/` and SPA fallback routes               |  |
 |  | - Binds to dynamic environment variable `$PORT` (defaults to 8000)                          |  |
-|  | - RAM Footprint: ~280MB peak (Safely under 512MB Railway Free Tier limit!)                  |  |
+|  | - RAM Footprint: ~1.26GB peak (Configured on Cloudflare Containers standard-2 tier)         |  |
 |  +---------------------------------------------------------------------------------------------+  |
 +---------------------------------------------------------------------------------------------------+
 ```

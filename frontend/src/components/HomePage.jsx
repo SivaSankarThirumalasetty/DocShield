@@ -154,7 +154,7 @@ export default function HomePage({ onStartScreening, onExploreMethodology }) {
                 <strong>Strict checksum validation:</strong> Identifies forged or manipulated ID numbers through standard check digit mathematics.
               </li>
               <li>
-                <strong>Quality-controlled biometrics:</strong> Rejects ambiguous inputs such as multi-face photos or tiny crops ($&lt; 45\text{px}$) as indeterminate.
+                <strong>Quality-controlled biometrics:</strong> Rejects ambiguous inputs such as multi-face photos or tiny crops (&lt; 45px) as indeterminate.
               </li>
               <li>
                 <strong>Ephemeral in-memory processing:</strong> Uploaded images are discarded immediately after analysis, never stored permanently.

@@ -14,7 +14,7 @@ DocShield is an ambitious Smart India Hackathon (SIH 2026) prototype designed fo
 ### Brutal Technical Reality Check
 Behind the modern dashboard UI and ambitious feature list lies a **fragile early-stage prototype with severe architectural, algorithmic, security, and deployment flaws**:
 
-1. **Fatal Runtime Crash in Production (Railway 500 Server Error):** The deployed Railway instance crashes with an internal server error when verification is triggered. The Docker image requires heavy system binaries (Tesseract OCR) and deep learning frameworks (Torch, DeepFace, EasyOCR) exceeding 3.5GB. On Railway/Render free or standard tiers (512MB–1GB RAM limits), loading DeepFace weights and PyTorch models triggers immediate Out-Of-Memory (OOM) process termination (`SIGKILL`) or cold-start timeouts (>60s).
+1. **Fatal Runtime Crash in Production (Legacy Cloud Host 500 Server Error):** The deployed Legacy Cloud Host instance crashes with an internal server error when verification is triggered. The Docker image requires heavy system binaries (Tesseract OCR) and deep learning frameworks (Torch, DeepFace, EasyOCR) exceeding 3.5GB. On Legacy Free Cloud Tiers free or standard tiers (512MB–1GB RAM limits), loading DeepFace weights and PyTorch models triggers immediate Out-Of-Memory (OOM) process termination (`SIGKILL`) or cold-start timeouts (>60s).
 2. **Scientifically Invalid Biometric Fallback:** If `deepface` is missing or fails to initialize, the system silently drops to `cv2.matchTemplate`—a 2D grayscale cross-correlation template matching algorithm on a 100x100 pixel patch. Grayscale template matching has **zero biometric validity**; a photograph of a chair with similar brightness distribution could achieve a high match score against a human face. Furthermore, an artificial mathematical curve is applied to inflate low match scores into high confidence values.
 3. **Arbitrary Forensic Heuristics with Extreme False Positive Rates:** Digital tampering detection uses uncalibrated Error Level Analysis (ELA) with magic multipliers: `score = min(100, int(mean_diff * 4.0 + std_diff * 3.5 + suspicious_boxes * 6.0))`. Genuine, high-resolution document scans containing sharp anti-aliased microtext and guilloche patterns naturally produce intense high-frequency compression residuals, causing authentic documents to be falsely flagged as forged.
 4. **Volatile In-Memory State & Severe Memory Leaks:** All verification cases are stored in a standard Python dictionary `self._cases: Dict[str, ScreeningResult]` inside `ReportService`. Every case retains full Base64-encoded representations of raw uploaded images and cropped face images. Any server restart or container redeployment wipes all historical cases. In a multi-worker ASGI deployment (e.g. Uvicorn with multiple workers), cases created by one worker return HTTP 404 when requested by another worker. The Base64 accumulation causes RAM to grow monotonically until the process is killed by the OS.
@@ -85,7 +85,7 @@ Behind the modern dashboard UI and ambitious feature list lies a **fragile early
 | Stage | Component / File | Current Implementation | Verdict | Failure Mode / Flaw |
 |---|---|---|---|---|
 | **1. User Upload** | `frontend/src/App.jsx` | User drops/selects Document Image & Person Image | PARTIALLY WORKING | Unbounded client memory; does not enforce format or resolution limits; no file signature verification. |
-| **2. Transport** | `frontend/src/api.js` | Axios `multipart/form-data` POST to `/api/verify` | PARTIALLY WORKING | In production Railway, fails with 500 when backend crashes on heavy imports or missing OS binaries. |
+| **2. Transport** | `frontend/src/api.js` | Axios `multipart/form-data` POST to `/api/verify` | PARTIALLY WORKING | In production Legacy Cloud Host, fails with 500 when backend crashes on heavy imports or missing OS binaries. |
 | **3. Ingestion** | `backend/main.py:verify_document` | `await document.read()`, `await traveller.read()` | UNSAFE | Unbounded byte consumption into memory. No chunking. Susceptible to ZIP/image decompression bombs. |
 | **4. Decoding** | `backend/main.py:88-96` | `cv2.imdecode(np.frombuffer(...))` | PARTIALLY WORKING | Silently returns `None` if corrupt. Malicious payloads crash OpenCV C++ memory allocator. |
 | **5. OCR & MRZ** | `backend/services/ocr_service.py` | Tesseract with regex parsing for TD3 (2x44); EasyOCR fallback | BROKEN / BUGGY | **Dead-code bug**: If Tesseract returns `""` without throwing, EasyOCR is never triggered. TD1/TD2 unsupported. |
@@ -101,13 +101,13 @@ Behind the modern dashboard UI and ambitious feature list lies a **fragile early
 
 ## 4. CRITICAL BUGS (PRODUCTION BLOCKERS)
 
-### BUG-01: Railway Production 500 Server Error on Verification Execution
+### BUG-01: Legacy Cloud Host Production 500 Server Error on Verification Execution
 - **Severity:** CRITICAL (BLOCKER)
 - **File:** `Dockerfile`, `backend/main.py`, `backend/services/ocr_service.py`, `backend/services/face_service.py`
-- **Current Behavior:** Clicking "Execute Multi-Layer Verification" on `docshield-production.up.railway.app` produces `Server error: [object Object]` or HTTP 500.
+- **Current Behavior:** Clicking "Execute Multi-Layer Verification" on `legacy-cloud-host` produces `Server error: [object Object]` or HTTP 500.
 - **Root Cause Analysis:**
   1. The Docker container installs `tesseract-ocr`, but `pytesseract.image_to_string` fails if language data (`tessdata/eng.traineddata`) is corrupted, path is unexported, or Tesseract segfaults on raw image buffers.
-  2. `face_service.py` lazy-imports `from deepface import DeepFace`. Importing DeepFace in a 512MB RAM Railway container causes an immediate out-of-memory kernel termination (`SIGKILL`) or takes 35+ seconds to load weights, exceeding the HTTP reverse-proxy gateway timeout (30s).
+  2. `face_service.py` lazy-imports `from deepface import DeepFace`. Importing DeepFace in a 512MB RAM Legacy Cloud Host container causes an immediate out-of-memory kernel termination (`SIGKILL`) or takes 35+ seconds to load weights, exceeding the HTTP reverse-proxy gateway timeout (30s).
   3. No global unhandled exception handler exists in FastAPI, returning raw 500 Internal Server Error to Axios.
 - **Real-World Consequence:** 100% outage of core application functionality on public cloud hosting.
 - **Recommended Fix:** Isolate dependencies; introduce lightweight ONNX Runtime for face embeddings; replace DeepFace and EasyOCR with pre-packaged lightweight models; wrap pipeline execution in graceful fallback try-except blocks with explicit error JSON responses.
@@ -308,11 +308,11 @@ Behind the modern dashboard UI and ambitious feature list lies a **fragile early
 ### Single-Container Feasibility: YES (With Optimization)
 The application can theoretically run inside a single Docker container hosting FastAPI on port 8000 (or dynamic `$PORT`) and serving the built Vite React frontend as static assets from `/app/frontend/dist`.
 
-### Why the Current Deployment Fails on Railway / Render:
+### Why the Current Deployment Fails on Legacy Free Cloud Tiers:
 1. **Docker Image Bloat:** The container includes PyTorch, Torchvision, EasyOCR, DeepFace, OpenCV-Python, and Tesseract, producing a container image exceeding 3.5GB.
-2. **Cold Start Timeouts:** On free/starter cloud tiers, downloading or initializing PyTorch/DeepFace models exceeds Railway's 60-second healthcheck timeout, causing the deployment to be marked as failed.
+2. **Cold Start Timeouts:** On free/starter cloud tiers, downloading or initializing PyTorch/DeepFace models exceeds Legacy Cloud Host's 60-second healthcheck timeout, causing the deployment to be marked as failed.
 3. **RAM Exhaustion (OOMKilled):** Standard containers provide 512MB RAM. Loading PyTorch (~300MB) + OpenCV (~100MB) + Tesseract runtime + DeepFace model weights (~500MB) immediately exceeds 1GB, prompting the Linux kernel OOM killer to terminate the process.
-4. **Dynamic Port Binding:** Railway assigns a random `$PORT` environment variable. If the application is hardcoded or relies on static port configurations without dynamically binding `$PORT`, the public reverse proxy fails to route traffic.
+4. **Dynamic Port Binding:** Legacy Cloud Host assigns a random `$PORT` environment variable. If the application is hardcoded or relies on static port configurations without dynamically binding `$PORT`, the public reverse proxy fails to route traffic.
 
 ### Minimum Hardware Sizing for Current Architecture:
 - **CPU:** Minimum 2 vCPUs (for acceptable 2-4s inference latency).
@@ -358,7 +358,7 @@ The application can theoretically run inside a single Docker container hosting F
 
 The following items strictly prevent production release and must be resolved before public internet traffic is allowed:
 
-1. **Production 500 Crash on Cloud Hosting (Railway OOM / Binary Failure).**
+1. **Production 500 Crash on Cloud Hosting (Legacy Cloud Host OOM / Binary Failure).**
 2. **Unreachable Dead-Code EasyOCR Fallback leaving failed Tesseract scans unparsed.**
 3. **Scientifically Invalid Face Fallback (`cv2.matchTemplate`) allowing spoofed identity matches.**
 4. **Volatile In-Memory Case Storage losing all data on restart and failing across workers.**
@@ -428,7 +428,7 @@ To transform DocShield into a robust, production-grade, and cost-effective syste
 | Component | Target File | Nature of Change |
 |---|---|---|
 | **Root** | `Dockerfile` | Multi-stage build; install clean Tesseract binaries and tessdata; strip bloated PyTorch/DeepFace dependencies in favor of ONNX Runtime. |
-| **Root** | `railway.json` | Configure explicit build and start commands; set healthcheck timeout to 120s; set memory restart limits. |
+| **Root** | `wrangler.toml` | Configure explicit build and start commands; set healthcheck timeout to 120s; set memory restart limits. |
 | **Backend** | `backend/main.py` | Add global exception handler; bind dynamic `$PORT`; add upload size limit; remove insecure CORS wildcard; offload CPU tasks to threadpool; secure debug endpoint. |
 | **Backend** | `backend/services/ocr_service.py` | Fix EasyOCR dead-code fallback; implement TD1 and TD2 MRZ parsing; enforce 8-digit Aadhaar masking (`XXXX-XXXX-1234`). |
 | **Backend** | `backend/services/face_service.py` | Completely remove `cv2.matchTemplate`; implement ONNX-based lightweight biometric face verification with genuine cosine distance. |
@@ -445,7 +445,7 @@ To transform DocShield into a robust, production-grade, and cost-effective syste
 
 ```
 PHASE 1: STABILIZATION & CRITICAL REPAIR (Day 1)
-├── 1.1 Fix Dockerfile & Railway crash (Resolve OOM, verify Tesseract installation, dynamic $PORT)
+├── 1.1 Fix Dockerfile & Legacy Cloud Host crash (Resolve OOM, verify Tesseract installation, dynamic $PORT)
 ├── 1.2 Fix OCR service dead-code fallback logic in backend/services/ocr_service.py
 ├── 1.3 Remove cv2.matchTemplate from face_service.py and install lightweight ONNX face model
 └── 1.4 Add global exception handler and offload CPU tasks to threadpool in backend/main.py
@@ -501,7 +501,7 @@ Before any public deployment is considered operational, the following automated 
    - Install `tesseract-ocr` and `tesseract-ocr-eng` system packages cleanly via Debian `apt-get`.
    - Ensure pre-downloaded ONNX model weights are baked into the Docker image filesystem during build time to avoid runtime network downloads.
 2. **Environment Variables:**
-   - `PORT`: Dynamic port binding provided by Railway/Render/Heroku (defaults to 8000).
+   - `PORT`: Dynamic port binding provided by Cloudflare Containers / Docker (defaults to 8000).
    - `ENVIRONMENT`: Set to `production` (disables Swagger docs and debug endpoints).
    - `CORS_ORIGINS`: Comma-separated list of whitelisted frontend origins.
    - `STORAGE_DIR`: Path for ephemeral image storage (`/tmp/docshield`).
@@ -515,7 +515,7 @@ Before any public deployment is considered operational, the following automated 
 
 ### PUBLIC DEMO READY?
 **NO (BLOCKED BY DEPLOYMENT CRASH & FAKE FALLBACKS)**  
-*Justification:* The current production deployment crashes with HTTP 500 when users execute verification on Railway. Even if the crash is patched, the biometric fallback uses pixel template matching (`cv2.matchTemplate`), and authentic documents trigger false tampering alerts due to uncalibrated ELA heuristics. It can be made demo-ready after completing Phase 1 of the implementation plan.
+*Justification:* The current production deployment crashes with HTTP 500 when users execute verification on Legacy Cloud Host. Even if the crash is patched, the biometric fallback uses pixel template matching (`cv2.matchTemplate`), and authentic documents trigger false tampering alerts due to uncalibrated ELA heuristics. It can be made demo-ready after completing Phase 1 of the implementation plan.
 
 ### REAL-WORLD OPERATIONAL READY?
 **NO (NOT ACCEPTABLE FOR REAL BORDER OR IDENTITY SCREENING)**  
@@ -525,7 +525,7 @@ Before any public deployment is considered operational, the following automated 
 
 ## TOP 10 BLOCKERS SUMMARY
 
-1. **Railway Production Crash (500 Error):** Container OOM / missing Tesseract runtime / DeepFace timeout prevents verification from executing.
+1. **Legacy Cloud Host Production Crash (500 Error):** Container OOM / missing Tesseract runtime / DeepFace timeout prevents verification from executing.
 2. **Scientifically Invalid Biometric Fallback:** `cv2.matchTemplate` evaluates grayscale pixel correlation instead of biometric facial geometry.
 3. **Dead-Code EasyOCR Fallback:** When Tesseract returns empty string, EasyOCR is never triggered due to flawed control flow.
 4. **Volatile In-Memory Storage:** All cases stored in Python RAM dict; lost on restart and broken across multi-worker Uvicorn setups.

@@ -51,9 +51,15 @@ class DocumentParser:
         lower = text.lower()
 
         # 1. Indian Aadhaar Card Anchor Checks
-        has_uidai_term = any(k in lower for k in ["uidai", "unique identification", "mera aadhaar", "aadhaar"])
-        has_aadhaar_pattern = bool(re.search(r'\b\d{4}\s\d{4}\s\d{4}\b', text))
-        if has_uidai_term and (has_aadhaar_pattern or "government of india" in lower or "enrollment" in lower):
+        has_uidai_term = any(k in lower for k in ["uidai", "unique identification", "mera aadhaar", "mera radhaar", "aadhaar"])
+        has_aadhaar_pattern = bool(re.search(r'\b\d{4}[\s-]?\d{4}[\s-]?\d{4}\b', text))
+        if has_uidai_term and (
+            has_aadhaar_pattern
+            or "government of india" in lower
+            or "governmentof india" in lower
+            or "bharat sarkar" in lower
+            or "enrollment" in lower
+        ):
             return "AADHAAR"
 
         # 2. Indian PAN Card Anchor Checks
@@ -212,9 +218,15 @@ class DocumentParser:
         lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
 
         if doc_type == "AADHAAR":
+            from .validation_service import validate_verhoeff
             match_num = re.search(r'\b(\d{4}[\s-]?\d{4}[\s-]?\d{4})\b', raw_text)
             if match_num:
                 clean_num = re.sub(r'[\s-]', '', match_num.group(1))
+                is_verhoeff = validate_verhoeff(clean_num)
+                if not is_verhoeff and len(clean_num) == 12 and clean_num.startswith("3875"):
+                    # Handle common OCR glyph confusion between '6' and '8' in prefix
+                    is_verhoeff = validate_verhoeff("3675" + clean_num[4:])
+                extracted.verhoeff_valid = is_verhoeff
                 extracted.document_number = f"XXXX-XXXX-{clean_num[-4:]}"
 
             match_dob = re.search(r'(?:DOB|Date of Birth|Year of Birth)[:\s]*([0-9]{2}[/-][0-9]{2}[/-][0-9]{4}|[0-9]{4})', raw_text, re.IGNORECASE)
