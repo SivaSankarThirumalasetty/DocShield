@@ -1,9 +1,12 @@
 import os
+import sys
 import time
 import json
 from pathlib import Path
 from PIL import Image
 import cv2
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from backend.services.ocr_service import ocr_service
 from backend.services.document_parser import document_parser

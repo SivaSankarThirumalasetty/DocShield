@@ -35,6 +35,7 @@ export default function ScreeningPage({
   const [processingStage, setProcessingStage] = useState(0);
 
   const docInputRef = useRef(null);
+  const personInputRef = useRef(null);
   const [clientError, setClientError] = useState(null);
 
   const validateAndSetDoc = (file) => {
@@ -65,6 +66,10 @@ export default function ScreeningPage({
     }
     if (file.size > 10 * 1024 * 1024) {
       setClientError(`Traveller photo exceeds 10MB limit (${(file.size / (1024 * 1024)).toFixed(1)}MB).`);
+      return;
+    }
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) && !file.name.match(/\.(jpe?g|png|webp)$/i)) {
+      setClientError("Unsupported format for traveller photo. Please select a JPEG, PNG, or WebP image.");
       return;
     }
     setPersonFile(file);
@@ -344,7 +349,7 @@ export default function ScreeningPage({
           <div className="biometrics-info-box">
             <HelpCircle size={16} className="info-icon" />
             <div className="info-content">
-              <strong>Quality Threshold:</strong> The engine automatically rejects multi-face photos or low-resolution crops ($&lt; 45\text{px}$) as <code>INDETERMINATE</code>.
+              <strong>Quality Threshold:</strong> The engine automatically rejects multi-face photos or low-resolution crops (&lt; 45px) as <code>INDETERMINATE</code>.
             </div>
           </div>
         </div>

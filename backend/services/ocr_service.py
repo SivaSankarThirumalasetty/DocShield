@@ -17,10 +17,12 @@ try:
 except ImportError:
     EASYOCR_AVAILABLE = False
 
+from pathlib import Path
+
 COMMON_TESSERACT_PATHS = [
     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
     r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-    r"C:\Users\sivas\AppData\Local\Programs\Tesseract-OCR\tesseract.exe",
+    str(Path.home() / "AppData" / "Local" / "Programs" / "Tesseract-OCR" / "tesseract.exe"),
     "/usr/bin/tesseract",
     "/usr/local/bin/tesseract",
     "/bin/tesseract",

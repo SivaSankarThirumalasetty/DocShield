@@ -39,10 +39,19 @@ class Settings(BaseModel):
     port: int = Field(default_factory=lambda: int(os.getenv("PORT", "8000")))
     
     # Security & CORS
+    frontend_origin: str = Field(
+        default_factory=lambda: os.getenv("FRONTEND_ORIGIN", "").strip()
+    )
     cors_origins_raw: str = Field(
         default_factory=lambda: os.getenv(
             "CORS_ORIGINS",
-            "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
+            "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000,https://docshield.pages.dev"
+        )
+    )
+    cors_origin_regex: str = Field(
+        default_factory=lambda: os.getenv(
+            "CORS_ORIGIN_REGEX",
+            r"^https://([a-z0-9-]+\.)?docshield(-[a-z0-9-]+)?\.pages\.dev$"
         )
     )
     officer_key: str = Field(
@@ -86,6 +95,15 @@ class Settings(BaseModel):
 
     @property
     def cors_origins(self) -> List[str]:
-        return [origin.strip() for origin in self.cors_origins_raw.split(",") if origin.strip()]
+        origins = [
+            origin.strip().rstrip("/")
+            for origin in self.cors_origins_raw.split(",")
+            if origin.strip() and origin.strip() != "*"
+        ]
+        if self.frontend_origin and self.frontend_origin != "*":
+            clean_fe = self.frontend_origin.rstrip("/")
+            if clean_fe not in origins:
+                origins.append(clean_fe)
+        return origins
 
 settings = Settings()

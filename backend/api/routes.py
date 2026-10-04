@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, List
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Query, Request, Depends, Header, status
+from starlette.concurrency import run_in_threadpool
 from PIL import Image
 
 from ..core.config import settings
@@ -170,9 +171,9 @@ async def analyze_document(
             except Exception as e:
                 logger.warning(f"Failed to process person image: {e}")
 
-        # 3. Optical Character Recognition (OCR)
+        # 3. Optical Character Recognition (OCR) - offloaded from async loop
         try:
-            ocr_result = ocr_service.extract_text(pil_doc)
+            ocr_result = await run_in_threadpool(ocr_service.extract_text, pil_doc)
         except Exception as e:
             logger.error(f"OCR extraction exception: {e}")
             ocr_result = {"engine": "error_fallback", "raw_text": "", "words": [], "success": False}
@@ -203,9 +204,9 @@ async def analyze_document(
             logger.error(f"Watchlist lookup error: {e}")
             watchlist_res = WatchlistHit(is_flagged=False, status="UNAVAILABLE", details="Database lookup failed.")
 
-        # 7. Error Level Analysis & Tampering Forensics
+        # 7. Error Level Analysis & Tampering Forensics - offloaded from async loop
         try:
-            tamper_res = tampering_service.analyze(pil_doc)
+            tamper_res = await run_in_threadpool(tampering_service.analyze, pil_doc)
         except Exception as e:
             logger.error(f"Forensics analysis error: {e}")
             tamper_res = TamperAnalysisResult(
@@ -216,9 +217,9 @@ async def analyze_document(
                 forensic_notes=["Forensic analysis unavailable"]
             )
 
-        # 8. Biometric Face Verification
+        # 8. Biometric Face Verification - offloaded from async loop
         try:
-            face_res = face_service.verify_faces(cv_doc, cv_person)
+            face_res = await run_in_threadpool(face_service.verify_faces, cv_doc, cv_person)
         except Exception as e:
             logger.error(f"Face verification error: {e}")
             face_res = FaceVerificationResult(
@@ -298,7 +299,7 @@ async def verify_face(
             validate_image_upload(b2, field_name=sanitize_filename(image2.filename))
             cv1 = bytes_to_cv2(b1)
             cv2_img = bytes_to_cv2(b2)
-            res = face_service.verify_faces(cv1, cv2_img)
+            res = await run_in_threadpool(face_service.verify_faces, cv1, cv2_img)
             return FaceVerifyResponse(
                 status="ok",
                 similarity_score=res.similarity_score,

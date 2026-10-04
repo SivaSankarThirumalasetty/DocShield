@@ -15,8 +15,12 @@ class ReportService:
         session_token: Optional[str] = None,
         is_officer: bool = False
     ) -> Optional[ScreeningResult]:
-        result, _ = storage_service.get_case(case_id, session_token=session_token, is_officer=is_officer)
-        return result
+        if session_token is not None or is_officer:
+            result, _ = storage_service.get_case_with_auth(
+                case_id, session_token=session_token, is_officer=is_officer
+            )
+            return result
+        return storage_service.get_case(case_id)
 
     def update_officer_review(self, case_id: str, review: OfficerReview) -> Optional[ScreeningResult]:
         return storage_service.update_officer_review(case_id, review)

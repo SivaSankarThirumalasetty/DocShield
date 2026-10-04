@@ -124,7 +124,7 @@ export default function MethodologyPage() {
             <div className="stage-badge-number">05</div>
             <h3 className="stage-heading">Mathematical Checksum Verification</h3>
             <p>
-              Calculates the Verhoeff check digit over the dihedral group \(D_5\) for Indian 12-digit Aadhaar numbers. Checksum failure flags counterfeit credential numbers immediately with high penalty.
+              Calculates the Verhoeff check digit over the dihedral group D₅ for Indian 12-digit Aadhaar numbers. Checksum failure flags counterfeit credential numbers immediately with high penalty.
             </p>
           </div>
 
@@ -142,7 +142,7 @@ export default function MethodologyPage() {
             <div className="stage-badge-number">07</div>
             <h3 className="stage-heading">Quality-Controlled Face Detection</h3>
             <p>
-              Locates human face bounding boxes on document scans and live selfies. Enforces quality constraints: rejects multi-face photos ($&gt;1$) or tiny crops ($&lt; 45\text{px}$) as <code>INDETERMINATE</code> with explicit flags.
+              Locates human face bounding boxes on document scans and live selfies. Enforces quality constraints: rejects multi-face photos (&gt; 1) or tiny crops (&lt; 45px) as <code>INDETERMINATE</code> with explicit flags.
             </p>
           </div>
 
@@ -151,7 +151,7 @@ export default function MethodologyPage() {
             <div className="stage-badge-number">08</div>
             <h3 className="stage-heading">1:1 Biometric Facial Comparison</h3>
             <p>
-              Extracts 128-dimensional deep metric learning embeddings using a dlib ResNet model. Calculates Euclidean distance with standard operational threshold \(\theta = 0.60\).
+              Extracts 128-dimensional deep metric learning embeddings using a dlib ResNet model. Calculates Euclidean distance with standard operational threshold θ = 0.60.
             </p>
           </div>
 

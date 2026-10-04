@@ -56,7 +56,11 @@ class SecurityAndPrivacyHeadersMiddleware(BaseHTTPMiddleware):
         elif "Origin" in request.headers and request.headers["Origin"] in settings.cors_origins:
             response.headers["Access-Control-Allow-Origin"] = request.headers["Origin"]
 
-        if request.url.scheme == "https":
+        is_https = (
+            request.url.scheme == "https"
+            or request.headers.get("x-forwarded-proto", "").lower() == "https"
+        )
+        if is_https:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
         return response
@@ -70,9 +74,10 @@ app.add_middleware(SecurityAndPrivacyHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_origin_regex or None,
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization", "X-Officer-Key", "X-Session-Token", "Cache-Control", "Accept"],
 )
 
 # ---------------------------------------------------------

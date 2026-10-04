@@ -14,8 +14,10 @@ import {
   Check, 
   RotateCcw,
   Printer,
-  Info
+  Info,
+  Key
 } from "lucide-react";
+import { getOfficerKey, setOfficerKey } from "../api";
 
 export default function ResultsView({ 
   result, 
@@ -33,6 +35,7 @@ export default function ResultsView({
   const [officerDecision, setOfficerDecision] = useState("CLEARED_FOR_ENTRY");
   const [overrideAi, setOverrideAi] = useState(false);
   const [officerNotes, setOfficerNotes] = useState("");
+  const [officerKeyInput, setOfficerKeyInput] = useState(getOfficerKey());
 
   if (!result) {
     return (
@@ -51,6 +54,9 @@ export default function ResultsView({
 
   const handleOfficerSubmit = (e) => {
     e.preventDefault();
+    if (officerKeyInput.trim()) {
+      setOfficerKey(officerKeyInput.trim());
+    }
     onSubmitOfficerReview({
       officer_id: officerId,
       officer_name: officerName,
@@ -793,6 +799,20 @@ export default function ResultsView({
                     <span>Override AI Advisory Verdict under Officer Discretion</span>
                   </label>
                 </div>
+              </div>
+
+              <div className="form-field-group">
+                <label className="form-label" htmlFor="officerKeySignoff">
+                  <span>Officer Authorization Key (X-Officer-Key)</span>
+                </label>
+                <input
+                  id="officerKeySignoff"
+                  type="password"
+                  className="form-input"
+                  value={officerKeyInput}
+                  onChange={(e) => setOfficerKeyInput(e.target.value)}
+                  placeholder="Enter authorized X-Officer-Key for statutory sign-off..."
+                />
               </div>
 
               <div className="form-field-group">

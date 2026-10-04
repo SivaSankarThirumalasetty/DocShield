@@ -1,214 +1,209 @@
-# DocShield Production Deployment Guide
+# DocShield Production Deployment & Cloudflare Migration Guide
 
-> **Status**: **PUBLIC PROTOTYPE READY**  
+> **Status**: **CLOUDFLARE HYBRID PRODUCTION ARCHITECTURE READY**  
 > **Mandatory Regulatory Disclosures**:
 > - *"DocShield is an independent AI-assisted document screening prototype and is not an official government verification service."*
 > - *"Registry checks are simulated demonstration data."*
 
 ---
 
-## 1. Executive Summary & Architecture
+## 1. Architecture Overview (Phase 2 Decision)
 
-DocShield is packaged as a **single-container, unified web application** accessible via a single public URL. It eliminates the need to separately manage frontend development servers (Vite) and backend workers (Uvicorn).
+DocShield uses a **split edge-frontend + container-backend architecture** that leverages Cloudflare's global edge network for the React SPA and security perimeter while keeping CPU/memory-intensive Python computer vision and biometric models on a container-capable Python runtime.
 
 ```
 +---------------------------------------------------------------------------------+
 |                                 Public Internet                                 |
-|                                       |                                         |
-|                  https://docshield-production.up.railway.app                    |
+|                            (Border Officer Browser)                             |
 +---------------------------------------------------------------------------------+
                                         |
-                             [ Reverse Proxy / TLS ]
-                                        |  (Port $PORT)
+                                        v  HTTPS (TLS 1.3 / Cloudflare Edge)
 +---------------------------------------------------------------------------------+
-| Single Docker Container                                                         |
-|                                                                                 |
-|   +-------------------------------------------------------------------------+   |
-|   | Uvicorn Server (Python 3.11 / FastAPI ASGI)                             |   |
-|   | Host: 0.0.0.0 | Port: ${PORT:-8000}                                      |   |
-|   +-------------------------------------------------------------------------+   |
-|          |                                                    |                 |
-|          v                                                    v                 |
-|   [ Static SPA Router ]                                [ API Subsystems ]       |
-|   - /                                                  - /health (Liveness)     |
-|   - /screening                                         - /ready (Readiness)     |
-|   - /results                                           - /api/analyze-document  |
-|   - /history                                           - /api/verify-face       |
-|   - /methodology                                       - /api/cases (Auth)      |
-|   - /privacy                                           - /api/officer/* (Auth)  |
-|   - /assets/*                                                                   |
-|   - /samples/*                                                                  |
-|   (Precompiled React/Vite in frontend/dist)                                     |
+| 1. CLOUDFLARE PAGES (Frontend & Edge Security)                                  |
+|    - Hosts compiled React 19 + Vite 7 static bundle (frontend/dist)             |
+|    - Enforces CSP, X-Frame-Options: DENY, X-Content-Type-Options: nosniff       |
+|    - Serves SPA routes via _redirects (/* -> /index.html 200)                   |
+|    - Optional Edge Reverse Proxy via Pages Function (functions/api/[[path]].js) |
 +---------------------------------------------------------------------------------+
+                                        |
+                                        v  HTTPS API Calls (VITE_API_BASE_URL)
++---------------------------------------------------------------------------------+
+| 2. PYTHON-CAPABLE CONTAINER BACKEND (FastAPI / Uvicorn / Docker)                |
+|    - Active Primary: Railway (https://docshield-production.up.railway.app)      |
+|    - Free-Tier Alternative: Hugging Face Spaces Docker (2 vCPU, 16 GB RAM)      |
+|    - Strict CORS (No wildcard '*' in production; restricted to Pages origin)    |
+|    - Cloudflare CF-Connecting-IP aware sliding-window rate limiting             |
+|    - Offloaded threadpool execution for CPU-bound OCR, ELA, and dlib inference  |
++---------------------------------------------------------------------------------+
+                                        |
+              +-------------------------+-------------------------+
+              v                         v                         v
++--------------------------+ +-----------------------+ +--------------------------+
+| 3. AI / CV / ML PIPELINE | | 4. EPHEMERAL MEMORY   | | 5. PERSISTENCE & STORAGE |
+| - Tesseract / EasyOCR    | | - In-memory Pillow /  | | - SQLite WAL (cases)     |
+| - OpenCV Caffe SSD Face  | |   NumPy buffers       | | - mock_database.json     |
+| - dlib 128-d ResNet      | | - Zero disk retention | | - Optional R2 / D1       |
+| - JPEG ELA Forensics     | |   for raw uploads     | |   migration path         |
++--------------------------+ +-----------------------+ +--------------------------+
 ```
 
----
-
-## 2. Target Deployment Platform: Railway
-
-DocShield is primarily pre-configured for deployment on **Railway** (`docshield-production.up.railway.app`).
-
-### 2.1 Configuration Files
-- **[`railway.json`](file:///D:/DocShield/DocShield/railway.json)**:
-  ```json
-  {
-    "$schema": "https://railway.app/railway.schema.json",
-    "build": {
-      "builder": "DOCKERFILE",
-      "dockerfilePath": "Dockerfile"
-    },
-    "deploy": {
-      "healthcheckPath": "/health",
-      "healthcheckTimeout": 100,
-      "restartPolicyType": "ON_FAILURE",
-      "restartPolicyMaxRetries": 10
-    }
-  }
-  ```
-- **Port Handling**: Railway dynamically assigns a listening port at container startup via the `$PORT` environment variable. The DocShield entrypoint dynamically binds to `${PORT:-8000}`.
+### Why Python CV/ML Remains on a Container Runtime (Not Cloudflare Workers)
+Cloudflare Workers (including Python Workers via Pyodide/WASM) impose a **128 MB memory limit** and do not support native compiled C++/Fortran shared libraries or system binaries required by DocShield:
+- `dlib` / `face_recognition` (compiled C++ 128-D ResNet face encoding model)
+- `opencv-python-headless` (C++ OpenCV DNN Caffe SSD `res10_300x300_ssd_iter_140000_fp16.caffemodel`)
+- `tesseract-ocr` (native C++ optical character recognition binary) & `easyocr` / `torch` (PyTorch CPU tensors requiring ~1.26 GB Peak RSS)
 
 ---
 
-## 3. Multi-Stage Dockerfile Specification
+## 2. Local Development Setup
 
-The container build uses a two-stage process to minimize image size and eliminate build tools from the final runtime image:
-
-### Stage 1: Frontend Build (`node:20-slim`)
-- Installs npm packages (`npm ci`).
-- Executes `npm run build` to create static HTML, CSS, and JS bundles in `frontend/dist`.
-- Excludes development artifacts (`node_modules`) from the production image.
-
-### Stage 2: Runtime Image (`python:3.11-slim`)
-- Installs necessary system libraries:
-  - `tesseract-ocr`, `tesseract-ocr-eng` (for OCR extraction)
-  - `libgl1`, `libglib2.0-0`, `libsm6`, `libxext6` (for OpenCV computer vision operations)
-  - `curl` (for healthcheck probing)
-- Installs lightweight CPU-only PyTorch wheel (`torch`, `torchvision` via `https://download.pytorch.org/whl/cpu`).
-- Installs Python dependencies (`backend/requirements.txt`).
-- Copies backend source code, pre-trained Caffe models (`models_weights/`), and demonstration database (`data/`).
-- Copies compiled frontend bundle from Stage 1 into `frontend/dist`.
-- Configures healthcheck against `/health`.
-- Launches Uvicorn dynamically binding to `${PORT:-8000}`.
-
----
-
-## 4. Environment Variables Reference
-
-Configure these in the Railway dashboard or `.env`:
-
-| Variable | Default Value | Purpose |
-|---|---|---|
-| `DOCSHIELD_ENV` | `production` | Set to `production` to disable interactive Swagger `/api/docs` and enforce strict logging. |
-| `DOCSHIELD_MODE` | `PROTOTYPE` | Enforces prototype disclaimer banners and demo database markers (`DEMO`, `PROTOTYPE`, `OPERATIONAL`). |
-| `PORT` | `8000` | Injected by hosting provider (Railway/Render); server binds to this port. |
-| `HOST` | `0.0.0.0` | Container network interface binding. |
-| `CORS_ORIGINS` | `*` or comma-separated URLs | Allowed origins for API requests. Do not use wildcard `*` with credentials enabled. |
-| `DOCSHIELD_OFFICER_KEY` | *(Set a secure secret)* | Secret token required for officer override and case history APIs via `X-Officer-Token` header. |
-| `MAX_UPLOAD_SIZE_BYTES` | `10485760` (10 MB) | Rejects files exceeding 10 MB to prevent resource exhaustion. |
-| `MAX_IMAGE_PIXELS` | `10000000` (10 MP) | Protects against decompression bomb exploits. |
-| `MAX_CONCURRENT_ANALYSIS`| `2` | Limits concurrent active CV/ML pipelines to prevent memory exhaustion on small instances. |
-| `RATE_LIMIT_ANALYZE_PER_MINUTE` | `10` | Restricts per-IP screening throughput to thwart DoS. |
-| `ENABLE_SOURCE_IMAGE_STORAGE` | `false` | Privacy safeguard: when `false`, raw uploaded biometric images are purged from disk immediately. |
-| `DATABASE_URL` | `sqlite:///./data/docshield.db` | Case metadata audit storage. Can be pointed to a persistent volume or PostgreSQL. |
-| `DATA_RETENTION_HOURS` | `24` | Automated retention window for case audit metadata. |
-
----
-
-## 5. Resource Sizing & Free-Tier Limitations
-
-### Empirical Performance Profile
-- **Cold Boot Time**: 6.92 seconds (model loading and database verification).
-- **Warm Inference Latency**: ~1.8 seconds (OCR + Caffe Face Detection + MRZ Validation + Forensics + Risk Fusion).
-- **Peak RSS (Memory Footprint)**: **1,261.6 MB** (~1.26 GB).
-
-### Hosting Recommendations
-> [!WARNING]
-> **512 MB Free-Tier Containers Will OOM**: Standard entry-level free tiers (such as 512 MB RAM on free Render/Railway instances) **cannot** support PyTorch + OpenCV + EasyOCR in-memory simultaneously. Deploying to a 512 MB instance will trigger an Out-Of-Memory (OOM) crash during container initialization.
-
-- **Minimum Required RAM**: **2.2 GB**
-- **Recommended RAM**: **4.0 GB** (enables 2 concurrent screenings without throttling)
-- **Minimum vCPU**: **2 vCPUs**
-- **Hosting Tier**: Railway Hobby / Pro plan (with up to 8 GB RAM allocation).
-
----
-
-## 6. Health & Readiness Probes
-
-DocShield implements dual probe endpoints conforming to cloud deployment standards:
-
-### 1. Liveness Probe: `GET /health`
-- **Purpose**: Confirms the web process is running and responding to HTTP requests.
-- **Response**: `HTTP 200 OK`
-  ```json
-  {
-    "status": "healthy",
-    "service": "DocShield Border Screening Engine",
-    "version": "2.0.0",
-    "timestamp": "2026-10-01T17:11:37.703627"
-  }
-  ```
-
-### 2. Readiness Probe: `GET /ready`
-- **Purpose**: Verifies that database connectivity, OCR engines, face detection models, and reference watchlists are active.
-- **Response**: `HTTP 200 OK` (or `HTTP 503` if a dependency is unavailable)
-  ```json
-  {
-    "status": "ready",
-    "mode": "PROTOTYPE",
-    "checks": {
-      "database": true,
-      "ocr_engine": true,
-      "face_detector": true,
-      "mock_database": true
-    },
-    "timestamp": "2026-10-01T17:11:37.713075"
-  }
-  ```
-
----
-
-## 7. Deployment Instructions
-
-### Deploying to Railway (Git Push)
-1. Fork or push the repository to your GitHub account:
-   ```bash
-   git add .
-   git commit -m "feat: complete DocShield single-container production architecture"
-   git push origin main
-   ```
-2. In Railway:
-   - Create a **New Project** -> **Deploy from GitHub repo**.
-   - Select the `DocShield` repository.
-   - Railway will automatically detect `railway.json` and build using `Dockerfile`.
-3. In Railway **Variables**:
-   - `DOCSHIELD_ENV` = `production`
-   - `DOCSHIELD_MODE` = `PROTOTYPE`
-   - `DOCSHIELD_OFFICER_KEY` = `[Generate a secure 32+ character random string]`
-4. Verify the deployment:
-   - Navigate to your public Railway domain: `https://docshield-production.up.railway.app/`.
-   - Verify that the homepage loads, the legal notices are visible, and `/health` returns `200`.
-
-### Local Docker Build & Verification
-To test the production container locally:
+### 2.1 Backend (FastAPI + Python 3.11)
 ```bash
-# Build the Docker image
-docker build -t docshield:latest .
+# 1. From repository root, install dependencies using Python 3.11
+py -3.11 -m pip install -r backend/requirements.txt
 
-# Run container on port 8000
-docker run -p 8000:8000 -e DOCSHIELD_MODE=PROTOTYPE -e DOCSHIELD_ENV=production docshield:latest
+# 2. Create local .env from template (optional)
+cp .env.example .env
 
-# Verify endpoints
-curl http://localhost:8000/health
-curl http://localhost:8000/ready
+# 3. Start Uvicorn development server
+py -3.11 -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+### 2.2 Frontend (React 19 + Vite 7)
+```bash
+# 1. Navigate to frontend directory
+cd frontend
+
+# 2. Install exact dependencies from package-lock.json
+npm ci
+
+# 3. Start Vite dev server (proxies /api, /health, /ready to http://127.0.0.1:8000)
+npm run dev
 ```
 
 ---
 
-## 8. Verification & Compliance Checklist
+## 3. Cloudflare Pages Deployment (Frontend)
 
-- [x] Precompiled React frontend statically served from `/` and client routes.
-- [x] Dynamic host port binding `${PORT:-8000}`.
-- [x] Liveness (`/health`) and Readiness (`/ready`) endpoints configured.
-- [x] Rate limiting (`10/min`) and concurrency semaphore (`MAX_CONCURRENT_ANALYSIS=2`) active.
-- [x] Ephemeral image handling (`ENABLE_SOURCE_IMAGE_STORAGE=false`) enforced.
-- [x] Mandatory public prototype notices and simulated registry disclosures displayed across UI.
+### 3.1 Build Verification
+- **Frontend Root Directory**: `frontend`
+- **Install & Build Command**: `npm ci && npm run build`
+- **Output Directory**: `dist` (inside `frontend/`, i.e. `frontend/dist` from repository root)
+- **Static Configuration Included in `frontend/public/`**:
+  - [`frontend/public/_redirects`](../frontend/public/_redirects): Routes all SPA paths (`/*`) to `/index.html` with HTTP `200`.
+  - [`frontend/public/_headers`](../frontend/public/_headers): Attaches `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(self)`, `Content-Security-Policy`, and immutable caching for `/assets/*`.
+
+### 3.2 Step-by-Step GitHub Connection in Cloudflare Dashboard
+1. Open the [Cloudflare Dashboard](https://dash.cloudflare.com/) and navigate to **Compute (Workers & Pages)** → **Create** → **Pages** → **Connect to Git**.
+2. Authorize GitHub and select the repository: **`SivaSankarThirumalasetty/DocShield`**.
+3. Configure **Build settings**:
+   | Setting | Value (Option 1: Root dir = `frontend`) | Value (Option 2: Repo root) |
+   |---|---|---|
+   | **Project name** | `docshield` | `docshield` |
+   | **Production branch** | `cloudflare-migration` *(or `master`)* | `cloudflare-migration` *(or `master`)* |
+   | **Root directory** | `frontend` | `/` *(leave blank)* |
+   | **Build command** | `npm ci && npm run build` | `npm --prefix frontend ci && npm --prefix frontend run build` |
+   | **Build output directory** | `dist` | `frontend/dist` |
+4. Under **Environment variables (Build & Runtime)**, add:
+   - `NODE_VERSION` = `20`
+   - `VITE_API_BASE_URL` = `https://docshield-production.up.railway.app` *(or your backend URL)*
+   - `VITE_APP_MODE` = `PROTOTYPE`
+5. Click **Save and Deploy**. Every `git push` to the configured branch will automatically trigger a new Cloudflare Pages build and atomic edge deployment.
+
+### 3.3 Optional Edge Proxy Mode (Zero-CORS Same-Origin API)
+DocShield includes a Cloudflare Pages Function at [`frontend/functions/api/[[path]].js`](../frontend/functions/api/[[path]].js):
+- If you set `VITE_API_BASE_URL=/` (or leave it empty in production) and configure the runtime variable `BACKEND_ORIGIN=https://docshield-production.up.railway.app` in Cloudflare Pages, all browser requests to `https://<project>.pages.dev/api/*` are proxied at the Cloudflare edge to `BACKEND_ORIGIN/api/*`.
+- This eliminates cross-origin preflight overhead and keeps the backend URL completely abstracted behind your Cloudflare Pages domain.
+
+---
+
+## 4. Backend Hosting & Free-Tier Investigation (Phase 6)
+
+### 4.1 Empirical Resource & Latency Profile
+Measured on the real DocShield AI pipeline (`backend/tests/performance_report.json` & `backend/tests/evaluation_report.json`):
+- **Cold Module & Model Initialization**: `7.24 seconds`
+- **Base Memory Footprint (RSS after startup)**: `490.0 MB`
+- **Peak Memory Footprint (RSS during OCR + Caffe SSD + dlib + ELA)**: **`1,263.0 MB` (~1.26 GB)**
+- **Warm Request Duration (`/api/analyze-document`)**:
+  - Live Railway Container (Tesseract + Caffe SSD + dlib + ELA): **`1,114 ms` (~1.11 seconds)**
+  - Local CPU with EasyOCR fallback: **`1,820 ms – 2,550 ms` (~1.8–2.5 seconds)**
+
+### 4.2 Evaluation of Python-Capable Hosting Options
+
+| Platform | Tier | RAM / CPU | Timeout | Suitability Verdict |
+|---|---|---|---|---|
+| **Railway** (`docshield-production.up.railway.app`) | Active Prototype / Hobby | Up to 8 GB RAM / 8 vCPU | 100s+ | **PASS (Recommended Primary)** — Already live, handles 1.26 GB peak RSS effortlessly, ~1.1s warm latency. |
+| **Hugging Face Spaces** (Docker SDK) | **Free Tier ($0/mo)** | **16 GB RAM / 2 vCPU** | 60s+ | **PASS (Best True Free-Tier Option)** — 16 GB RAM easily accommodates PyTorch + EasyOCR + OpenCV + dlib without OOM crashes. |
+| **Render** | Free Web Service | 512 MB RAM / 0.1 CPU | 100s | **FAIL (Unsuitable)** — 512 MB RAM Limit causes immediate Out-Of-Memory (OOM) crash when loading PyTorch/EasyOCR/dlib (~1.26 GB RSS). |
+| **Fly.io** | Legacy Free / Pay-as-you-go | 256 MB – 512 MB default | 60s | **FAIL on 256/512 MB** — Requires paid 2 GB+ VM scaling. |
+| **Cloudflare Workers** | Free / Paid | 128 MB WASM | 30s CPU | **FAIL (Incompatible)** — Cannot execute native C++ `dlib`, `OpenCV DNN`, `Tesseract`, or 1.26 GB PyTorch models. |
+
+### 4.3 Standalone Backend Deployment (`backend/Dockerfile`)
+To deploy the FastAPI backend independently of the frontend (e.g., on Railway, Hugging Face Spaces, Cloud Run, or any Docker host):
+```bash
+# Build standalone backend container from repository root
+docker build -f backend/Dockerfile -t docshield-backend:latest .
+
+# Run standalone backend container
+docker run -p 8000:8000 \
+  -e DOCSHIELD_ENV=production \
+  -e DOCSHIELD_MODE=PROTOTYPE \
+  -e FRONTEND_ORIGIN=https://docshield.pages.dev \
+  -e DOCSHIELD_OFFICER_KEY=replace-with-strong-32-char-secret \
+  docshield-backend:latest
+```
+
+---
+
+## 5. Storage Architecture Evaluation (Phase 7)
+
+| Storage Component | Current Implementation | Production Behavior & Cloudflare R2 / D1 Evaluation |
+|---|---|---|
+| **Uploaded Document & Face Images** | **Ephemeral In-Memory (`io.BytesIO`)** | Controlled by `ENABLE_SOURCE_IMAGE_STORAGE=false`. Raw biometric uploads are **never** written to disk, satisfying privacy-by-design. Small base64 thumbnails are stored inside the case record. **Cloudflare R2** is only needed if long-term archival of raw high-res evidence files is desired in a future phase. |
+| **Case Audit History & Sessions** | **SQLite WAL (`backend/data/docshield.db`)** | Uses SQLAlchemy with `PRAGMA journal_mode=WAL` and `PRAGMA synchronous=NORMAL`, plus automatic 24-hour retention pruning (`DATA_RETENTION_HOURS=24`). Fully functional for public prototype use. Can be pointed to external PostgreSQL via `DATABASE_URL` or bridged to **Cloudflare D1** HTTP API if multi-region stateless replicas are introduced later. |
+| **Watchlist Registry** | **Read-Only JSON (`backend/data/mock_database.json`)** | Bundled with the backend container; loaded into memory at startup with graceful `UNAVAILABLE` degradation if missing. |
+| **Pre-trained CV/ML Weights** | **Container Layer (`backend/models_weights/`)** | Bundled directly in the Docker image (`deploy.prototxt` & `res10_300x300_ssd_iter_140000_fp16.caffemodel`) so cold starts never depend on external weight downloads. |
+
+---
+
+## 6. Environment Variables Reference (Phase 4, 8 & 13)
+
+### 6.1 PUBLIC Variables (Frontend — Cloudflare Pages)
+> **IMPORTANT**: Variables prefixed with `VITE_` are statically compiled into the public frontend JavaScript bundle. Never place secrets here.
+
+| Variable | Value (Development) | Value (Production) | Purpose |
+|---|---|---|---|
+| `VITE_API_BASE_URL` | `http://127.0.0.1:8000` | `https://docshield-production.up.railway.app` | Target FastAPI backend origin |
+| `VITE_APP_MODE` | `PROTOTYPE` | `PROTOTYPE` | Controls UI prototype disclaimer badges |
+
+### 6.2 PRIVATE Variables (Backend — Railway / Docker Runtime)
+> **SECURITY**: Configure these only in the backend container environment. Never commit `.env` files.
+
+| Variable | Default / Example | Purpose |
+|---|---|---|
+| `DOCSHIELD_ENV` | `production` | Disables `/api/docs`, `/api/redoc`, and `/api/debug`; enables strict error sanitization |
+| `DOCSHIELD_MODE` | `PROTOTYPE` | Enforces prototype disclosures (`DEMO`, `PROTOTYPE`, `OPERATIONAL`) |
+| `DOCSHIELD_OFFICER_KEY` | *(Set a strong 32+ char secret)* | Required in `X-Officer-Key` header for `/api/cases` and `/api/case/{id}/review` |
+| `FRONTEND_ORIGIN` | `https://docshield.pages.dev` | Primary Cloudflare Pages frontend origin permitted by CORS |
+| `CORS_ORIGINS` | `https://docshield.pages.dev` | Comma-separated list of allowed origins (wildcard `*` is stripped in production) |
+| `CORS_ORIGIN_REGEX` | `^https://([a-z0-9-]+\.)?docshield(-[a-z0-9-]+)?\.pages\.dev$` | Permits Cloudflare Pages branch preview deployments (`https://<hash>.docshield.pages.dev`) |
+| `DATABASE_URL` | `sqlite:///./backend/data/docshield.db` | SQLAlchemy database URL |
+| `MAX_UPLOAD_SIZE_BYTES` | `10485760` (10 MB) | Enforces 10 MB upload cap |
+| `MAX_IMAGE_PIXELS` | `10000000` (10 MP) | Prevents image decompression bomb attacks |
+| `MAX_CONCURRENT_ANALYSIS` | `2` | Bounded semaphore preventing memory exhaustion under concurrent load |
+| `RATE_LIMIT_ANALYZE_PER_MINUTE` | `10` | Per-IP rate limit on `/api/analyze-document` using `CF-Connecting-IP` |
+| `ENABLE_SOURCE_IMAGE_STORAGE` | `false` | Purges raw biometric images immediately after in-memory processing |
+
+---
+
+## 7. Railway Coexistence & Retirement Checklist (Phase 14)
+
+The existing Railway deployment (`https://docshield-production.up.railway.app`) **must remain operational** as the active Python AI/CV backend (and fallback unified host) until all items below are verified in production:
+
+- [x] `cloudflare-migration` branch created without modifying `master`.
+- [x] Frontend build (`npm ci && npm run build`) succeeds cleanly into `frontend/dist` with `_headers` and `_redirects`.
+- [x] Frontend `VITE_API_BASE_URL` configurable architecture verified with 45s timeout and sanitized error handling.
+- [x] Backend CORS hardened (no wildcard `*` in production; supports `FRONTEND_ORIGIN` and `*.docshield.pages.dev`).
+- [x] Backend rate limiter extracts real client IP from Cloudflare `CF-Connecting-IP`.
+- [x] All 77 automated pytest tests and empirical sample evaluations pass.
+- [ ] Connect `SivaSankarThirumalasetty/DocShield` (`cloudflare-migration` branch) in the Cloudflare Pages dashboard and verify the live `*.pages.dev` URL end-to-end before retiring any legacy configuration.

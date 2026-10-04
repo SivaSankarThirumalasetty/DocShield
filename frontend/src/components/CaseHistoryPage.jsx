@@ -215,7 +215,7 @@ export default function CaseHistoryPage({ currentResult, onSelectCase }) {
                       </td>
                       <td className="bold">{c.verdict?.replace(/_/g, " ")}</td>
                       <td>
-                        {c.officer_review?.reviewed ? (
+                        {c.officer_decision || c.officer_review?.reviewed ? (
                           <span className="status-badge pass">
                             <CheckCircle size={12} /> Signed
                           </span>

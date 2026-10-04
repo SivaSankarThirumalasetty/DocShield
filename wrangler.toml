@@ -1,0 +1,9 @@
+# Cloudflare Pages Configuration for DocShield Frontend
+name = "docshield"
+compatibility_date = "2026-10-01"
+pages_build_output_dir = "frontend/dist"
+
+# Note:
+# Python/FastAPI/OpenCV/OCR/dlib backend runs on a container-capable Python runtime
+# (e.g., Railway / Hugging Face Spaces Docker) and is connected via VITE_API_BASE_URL
+# or optional Cloudflare Pages Function proxy (BACKEND_ORIGIN).

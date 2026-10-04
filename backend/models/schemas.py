@@ -32,6 +32,7 @@ class ExtractedFields(BaseModel):
     ocr_confidence: float = 0.0
     evidence_state: str = "INDETERMINATE"
     raw_text_preview: str = ''
+    verhoeff_valid: Optional[bool] = Field(default=None, exclude=True)
 
 class ValidationFlag(BaseModel):
     check_name: str
