@@ -109,8 +109,20 @@ Write-Host "      Cloudflare Tunnel active: $TunnelUrl (PID: $($TunnelWmi.Proces
 Write-Host "[3/3] Updating Cloudflare Worker BACKEND_ORIGIN secret ..." -ForegroundColor Yellow
 $TunnelUrl | npx wrangler secret put BACKEND_ORIGIN
 
+# 5. Ensure Windows Startup auto-launch wrapper is registered for reboots
+try {
+    $StartupFolder = [Environment]::GetFolderPath("Startup")
+    if ($StartupFolder -and (Test-Path $StartupFolder)) {
+        $WatchdogScript = Join-Path $PSScriptRoot "keep-tunnel-alive.ps1"
+        $VbsPath = Join-Path $StartupFolder "DocShield-Tunnel-Autostart.vbs"
+        $VbsContent = "Set WshShell = CreateObject(""WScript.Shell"")`r`nWshShell.Run ""powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File """"$WatchdogScript"""""", 0, False`r`n"
+        Set-Content -Path $VbsPath -Value $VbsContent -Encoding ASCII -Force
+    }
+} catch {}
+
 Write-Host "==================================================================" -ForegroundColor Cyan
 Write-Host " DocShield Live on Cloudflare!" -ForegroundColor Green
 Write-Host " Frontend + API Gateway : $FrontendOrigin" -ForegroundColor Green
 Write-Host " Active Tunnel Origin   : $TunnelUrl (PID: $($TunnelWmi.ProcessId))" -ForegroundColor Green
 Write-Host "==================================================================" -ForegroundColor Cyan
+
