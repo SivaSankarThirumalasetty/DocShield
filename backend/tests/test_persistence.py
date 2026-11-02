@@ -40,7 +40,7 @@ def make_test_case(case_id="DS-TEST-001"):
         risk_assessment=RiskAssessment(
             score=15,
             level="LOW",
-            verdict="CLEARED"
+            verdict="NO_ADVERSE_INDICATORS"
         )
     )
 
@@ -51,7 +51,9 @@ def test_save_and_get_case(temp_storage):
     fetched = temp_storage.get_case("DS-2026-TEST1")
     assert fetched is not None
     assert fetched.case_id == "DS-2026-TEST1"
-    assert fetched.document_info.document_number == "A12345678"
+    assert fetched.document_info.document_number == "*****5678"
+    assert fetched.document_info.raw_text_preview == ""
+    assert fetched.document_preview_base64 is None
     assert fetched.risk_assessment.score == 15
 
 def test_list_cases(temp_storage):
@@ -70,7 +72,7 @@ def test_update_officer_review(temp_storage):
         reviewed=True,
         officer_id="OFFICER-007",
         officer_name="Agent Smith",
-        decision="CLEARED_FOR_ENTRY",
+        decision="CONCUR_NO_FURTHER_ACTION",
         notes="Physical inspection confirmed holographic watermark."
     )
 
@@ -78,4 +80,4 @@ def test_update_officer_review(temp_storage):
     assert updated is not None
     assert updated.officer_review.reviewed is True
     assert updated.officer_review.officer_id == "OFFICER-007"
-    assert updated.officer_review.decision == "CLEARED_FOR_ENTRY"
+    assert updated.officer_review.decision == "CONCUR_NO_FURTHER_ACTION"

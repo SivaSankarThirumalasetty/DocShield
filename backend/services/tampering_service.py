@@ -88,13 +88,13 @@ class TamperingService:
             has_anomalies = len(boxes) > 0 or ela_score > 55.0
             
             if ela_score > 65.0:
-                notes.append("Significant compression discrepancy detected across multiple document patches; secondary manual forensic verification recommended.")
+                notes.append("Compression inconsistencies detected in multiple regions (heuristic ELA). This is not proof of forgery; manual forensic review recommended.")
                 evidence_state = "FAIL"
             elif ela_score > 40.0:
                 notes.append("Moderate localized error-level variance observed. Further manual forensic review advised.")
                 evidence_state = "INDETERMINATE"
             else:
-                notes.append("Uniform compression profile consistent with authentic unaltered digital capture.")
+                notes.append("No significant compression inconsistencies found by heuristic ELA. This does not establish that the document is authentic.")
                 evidence_state = "PASS"
 
             if boxes:
@@ -120,7 +120,7 @@ class TamperingService:
                 bounding_boxes=[],
                 ela_image_base64=None,
                 analysis_confidence=0.0,
-                forensic_notes=[f"Forensic analysis notice: Analysis unavailable ({str(e)})"],
+                forensic_notes=["Forensic analysis unavailable due to an internal processing error."],
                 forensic_limitations=FORENSIC_LIMITATIONS,
                 evidence_state="UNAVAILABLE"
             )

@@ -33,6 +33,12 @@ class InMemoryRateLimiter:
         now = time.time()
         
         async with self._lock:
+            # Bound memory: drop idle clients once the table grows large.
+            if len(self._requests) > 10_000:
+                self._requests = {
+                    ip: ts for ip, ts in self._requests.items()
+                    if ts and now - ts[-1] < window_seconds
+                }
             # Clean expired timestamps
             if client_ip in self._requests:
                 self._requests[client_ip] = [

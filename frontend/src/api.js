@@ -1,264 +1,158 @@
-// Configurable API base URL for Cloudflare Worker/Container -> Python FastAPI backend communication.
-// Development: defaults to "" (routed via Vite dev proxy to http://127.0.0.1:8000) or explicit VITE_API_BASE_URL.
-// Production (Cloudflare): defaults to same-origin Cloudflare Worker API (configurable via VITE_API_BASE_URL).
-const DEFAULT_CLOUDFLARE_API_BASE = "https://docshield.sivasankar-t1606.workers.dev";
-const rawApiBase = (
-  import.meta.env.VITE_API_BASE_URL !== undefined
-    ? import.meta.env.VITE_API_BASE_URL
-    : import.meta.env.PROD
-    ? DEFAULT_CLOUDFLARE_API_BASE
-    : ""
-).trim();
-export const API_BASE = rawApiBase.replace(/\/+$/, "").replace(/\/api$/i, "");
+// API client. Production and local development are both same-origin:
+// production goes through the Cloudflare Worker, local dev through the Vite proxy.
+export const API_BASE = "";
 
-const DEFAULT_TIMEOUT_MS = 45000;
-const HEALTH_TIMEOUT_MS = 8000;
+const ANALYZE_TIMEOUT_MS = 150000; // includes a possible container cold start
+const DEFAULT_TIMEOUT_MS = 30000;
+const READY_TIMEOUT_MS = 95000;
+const REVIEWER_TOKEN_KEY = "docshield_reviewer_token";
 
-// Ephemeral in-memory session token store for active analysis
-let currentSessionToken = null;
-let currentOfficerKey = "";
+// Reviewer bearer token: kept for this browser tab only (sessionStorage), never localStorage.
+let reviewerToken = "";
 try {
-  currentOfficerKey =
-    typeof window !== "undefined" && window.localStorage
-      ? localStorage.getItem("docshield_officer_key") || ""
-      : "";
+  reviewerToken = window.sessionStorage.getItem(REVIEWER_TOKEN_KEY) || "";
 } catch (_) {
-  currentOfficerKey = "";
+  reviewerToken = "";
 }
 
-export function setOfficerKey(key) {
-  currentOfficerKey = (key || "").trim();
+export function setReviewerToken(token) {
+  reviewerToken = (token || "").trim();
   try {
-    if (typeof window !== "undefined" && window.localStorage) {
-      if (currentOfficerKey) {
-        localStorage.setItem("docshield_officer_key", currentOfficerKey);
-      } else {
-        localStorage.removeItem("docshield_officer_key");
-      }
-    }
-  } catch (_) {}
+    if (reviewerToken) window.sessionStorage.setItem(REVIEWER_TOKEN_KEY, reviewerToken);
+    else window.sessionStorage.removeItem(REVIEWER_TOKEN_KEY);
+  } catch (_) {
+    // Storage unavailable (private mode / blocked): token stays in memory only.
+  }
 }
 
-export function getOfficerKey() {
-  return currentOfficerKey;
+export function getReviewerToken() {
+  return reviewerToken;
 }
 
+// The submitter's case token lives only in memory for the current page session.
+let currentSessionToken = null;
 export function getSessionToken() {
   return currentSessionToken;
 }
 
+function authHeaders() {
+  return reviewerToken ? { Authorization: `Bearer ${reviewerToken}` } : {};
+}
+
 function sanitizeErrorMessage(status, rawDetail) {
-  if (status === 413) {
-    return "File size exceeds the 10MB security limit. Please upload a smaller document scan.";
+  if (status === 413) return "File too large. Each image must be 10 MB or smaller.";
+  if (status === 415) return "Unsupported upload. Only JPEG, PNG and WebP images are accepted.";
+  if (status === 429) return "Too many requests. Please wait a minute and try again.";
+  if (status === 503 || status === 504) {
+    return "The screening engine is starting or busy. Please retry in a few seconds.";
   }
-  if (status === 415) {
-    return "Unsupported file format. Only authentic JPEG, PNG, and WebP images are permitted.";
+  if (status === 502) return "The screening engine returned an error. Please try again.";
+  if (typeof rawDetail === "string" && rawDetail.trim() && rawDetail.length < 300 && !rawDetail.trim().startsWith("<")) {
+    return rawDetail.trim();
   }
-  if (status === 429) {
-    return "Rate limit reached for document screening. Please wait a moment and try again.";
-  }
-  if (status === 502 || status === 503 || status === 504) {
-    return "Screening backend is currently warming up or temporarily unavailable. Please retry in a few seconds.";
-  }
-
-  if (typeof rawDetail === "string" && rawDetail.trim()) {
-    const trimmed = rawDetail.trim();
-    // Never expose raw HTML error pages or Python tracebacks to the user
-    if (
-      trimmed.startsWith("<!DOCTYPE") ||
-      trimmed.startsWith("<html") ||
-      trimmed.includes("Traceback (most recent call last)")
-    ) {
-      return "Verification processing error on the server. Please verify your document image and try again.";
-    }
-    return trimmed;
-  }
-
-  if (status === 400 || status === 422) {
-    return "Invalid document upload or request format. Please upload a clear JPEG, PNG, or WebP image.";
-  }
-  if (status === 401 || status === 403) {
-    return "Authorization required. Please provide a valid Officer Key or active session token.";
-  }
-  if (status === 404) {
-    return "Requested screening record or endpoint was not found.";
-  }
-  return "Verification service error. Please ensure the backend is online and try again.";
+  if (status === 400 || status === 422) return "Invalid upload or request. Please use a clear JPEG, PNG or WebP image.";
+  if (status === 401) return "Reviewer authentication required.";
+  if (status === 404) return "Not found, or you are not authorised to view it.";
+  return "Unexpected service error. Please try again.";
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  const external = options.signal;
+  const onAbort = () => controller.abort("cancelled");
+  if (external) external.addEventListener("abort", onAbort);
   try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
-    return response;
+    return await fetch(url, { ...options, signal: controller.signal, cache: "no-store" });
   } catch (err) {
-    if (err && err.name === "AbortError") {
+    if (controller.signal.aborted) {
       throw new Error(
-        "Document analysis timed out while waiting for OCR/biometric processing. The backend may be waking up from a cold start—please retry."
+        controller.signal.reason === "cancelled"
+          ? "Request cancelled."
+          : "The request timed out. The screening engine may be starting; please retry.",
+        { cause: err }
       );
     }
-    throw new Error(
-      "Screening backend is currently unreachable. Please check your connection or verify that the API server is online."
-    );
+    throw new Error("Could not reach the DocShield service. Check your connection and retry.", { cause: err });
   } finally {
     clearTimeout(timer);
+    if (external) external.removeEventListener("abort", onAbort);
   }
 }
 
-async function extractErrorFromResponse(res) {
+async function errorFrom(res) {
   let detail = null;
   try {
-    const errData = await res.json();
-    if (errData && errData.detail) {
-      detail =
-        typeof errData.detail === "string"
-          ? errData.detail
-          : Array.isArray(errData.detail)
-          ? errData.detail.map((e) => e.msg || JSON.stringify(e)).join("; ")
-          : JSON.stringify(errData.detail);
-    } else if (errData && errData.error) {
-      detail = typeof errData.error === "string" ? errData.error : JSON.stringify(errData.error);
-    }
+    const body = await res.json();
+    if (typeof body?.detail === "string") detail = body.detail;
   } catch (_) {
-    try {
-      const text = await res.text();
-      if (text) detail = text;
-    } catch (__) {}
+    // Non-JSON error body: fall back to a status-based message.
   }
-  return sanitizeErrorMessage(res.status, detail);
+  return new Error(sanitizeErrorMessage(res.status, detail));
 }
 
-export async function checkHealth() {
-  const res = await fetchWithTimeout(
-    `${API_BASE}/api/health`,
-    { headers: { "Cache-Control": "no-cache" } },
-    HEALTH_TIMEOUT_MS
-  );
-  if (!res.ok) throw new Error("Health check failed");
-  return res.json();
+/**
+ * Real readiness of the whole stack (Worker + D1 + container models).
+ * Resolves to { state: "ready" | "starting" | "unavailable", body }.
+ */
+export async function checkReadiness(signal) {
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/ready`, { signal }, READY_TIMEOUT_MS);
+    const body = await res.json().catch(() => null);
+    if (res.ok && body?.status === "ready") return { state: "ready", body };
+    if (res.status === 503 && body) return { state: "starting", body };
+    return { state: "unavailable", body };
+  } catch (err) {
+    if (err.message === "Request cancelled.") throw err;
+    return { state: "unavailable", body: null };
+  }
 }
 
-export async function analyzeDocument(docFile, personFile = null, docTypeHint = "auto") {
-  if (!docFile) {
-    throw new Error("Please select an identity document image to screen.");
-  }
-  if (docFile.size === 0) {
-    throw new Error("Uploaded document file is empty (0 bytes).");
-  }
-  if (docFile.size > 10 * 1024 * 1024) {
-    throw new Error("Uploaded document exceeds maximum allowed size of 10MB.");
-  }
-  if (personFile && personFile.size > 10 * 1024 * 1024) {
-    throw new Error("Uploaded traveller photo exceeds maximum allowed size of 10MB.");
-  }
+export async function analyzeDocument(docFile, personFile = null, docTypeHint = "auto", signal) {
+  if (!docFile) throw new Error("Please select an identity document image to screen.");
+  if (docFile.size === 0) throw new Error("The selected document file is empty.");
+  if (docFile.size > 10 * 1024 * 1024) throw new Error("The document image exceeds 10 MB.");
+  if (personFile && personFile.size > 10 * 1024 * 1024) throw new Error("The person photo exceeds 10 MB.");
 
   const formData = new FormData();
   formData.append("document", docFile);
-  if (personFile) {
-    formData.append("person_image", personFile);
-  }
-  if (docTypeHint && docTypeHint !== "auto") {
-    formData.append("doc_type_hint", docTypeHint);
-  }
+  if (personFile) formData.append("person_image", personFile);
+  if (docTypeHint && docTypeHint !== "auto") formData.append("doc_type_hint", docTypeHint);
 
-  const res = await fetchWithTimeout(
-    `${API_BASE}/api/analyze-document`,
-    {
-      method: "POST",
-      body: formData,
-    },
-    DEFAULT_TIMEOUT_MS
-  );
-
-  if (!res.ok) {
-    const msg = await extractErrorFromResponse(res);
-    throw new Error(msg);
-  }
-
+  const res = await fetchWithTimeout(`${API_BASE}/api/analyze-document`, { method: "POST", body: formData, signal }, ANALYZE_TIMEOUT_MS);
+  if (!res.ok) throw await errorFrom(res);
   const data = await res.json();
-  if (data && data.session_token) {
-    currentSessionToken = data.session_token;
-  }
+  currentSessionToken = data?.session_token || null;
   return data;
-}
-
-export async function verifyFace(image1File, image2File) {
-  if (!image1File || !image2File) {
-    throw new Error("Both portrait images are required for 1:1 biometric face verification.");
-  }
-  const formData = new FormData();
-  formData.append("image1", image1File);
-  formData.append("image2", image2File);
-
-  const res = await fetchWithTimeout(
-    `${API_BASE}/api/verify-face`,
-    {
-      method: "POST",
-      body: formData,
-    },
-    DEFAULT_TIMEOUT_MS
-  );
-
-  if (!res.ok) {
-    const msg = await extractErrorFromResponse(res);
-    throw new Error(msg);
-  }
-  return res.json();
 }
 
 export async function getCase(caseId, sessionToken = null) {
   const token = sessionToken || currentSessionToken;
-  const headers = { "Cache-Control": "no-cache" };
+  const headers = { ...authHeaders() };
   if (token) headers["X-Session-Token"] = token;
-  if (currentOfficerKey) headers["X-Officer-Key"] = currentOfficerKey;
+  const res = await fetchWithTimeout(`${API_BASE}/api/case/${encodeURIComponent(caseId)}`, { headers });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
 
-  const res = await fetchWithTimeout(`${API_BASE}/api/case/${encodeURIComponent(caseId)}`, {
-    headers,
-  });
-  if (!res.ok) {
-    if (res.status === 403) throw new Error("Access denied: Authorization required to view case.");
-    if (res.status === 404) throw new Error("Case not found.");
-    const msg = await extractErrorFromResponse(res);
-    throw new Error(msg);
-  }
+export async function getReviewerProfile() {
+  const res = await fetchWithTimeout(`${API_BASE}/api/officer/me`, { headers: authHeaders() });
+  if (!res.ok) throw await errorFrom(res);
   return res.json();
 }
 
 export async function listCases() {
-  const headers = { "Cache-Control": "no-cache" };
-  if (currentOfficerKey) headers["X-Officer-Key"] = currentOfficerKey;
-
-  const res = await fetchWithTimeout(`${API_BASE}/api/cases`, { headers });
-  if (!res.ok) {
-    if (res.status === 401) throw new Error("Officer authorization required to view case history.");
-    const msg = await extractErrorFromResponse(res);
-    throw new Error(msg);
-  }
+  const res = await fetchWithTimeout(`${API_BASE}/api/cases`, { headers: authHeaders() });
+  if (!res.ok) throw await errorFrom(res);
   return res.json();
 }
 
 export async function submitOfficerReview(caseId, reviewData) {
-  const headers = {
-    "Content-Type": "application/json",
-    "Cache-Control": "no-cache",
-  };
-  if (currentOfficerKey) headers["X-Officer-Key"] = currentOfficerKey;
-
-  const res = await fetchWithTimeout(
-    `${API_BASE}/api/case/${encodeURIComponent(caseId)}/review`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify(reviewData),
-    }
-  );
-  if (!res.ok) {
-    const msg = await extractErrorFromResponse(res);
-    throw new Error(msg);
-  }
+  const res = await fetchWithTimeout(`${API_BASE}/api/case/${encodeURIComponent(caseId)}/review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(reviewData),
+  });
+  if (!res.ok) throw await errorFrom(res);
   return res.json();
 }

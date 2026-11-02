@@ -17,7 +17,32 @@ import {
   Info,
   Key
 } from "lucide-react";
-import { getOfficerKey, setOfficerKey } from "../api";
+import { getReviewerToken, setReviewerToken } from "../api";
+
+const VERDICT_LABELS = {
+  NO_ADVERSE_INDICATORS: "No adverse indicators from automated checks",
+  INCOMPLETE_SCREENING: "Screening incomplete: manual review required",
+  MANUAL_REVIEW_RECOMMENDED: "Manual review recommended",
+  ESCALATE_FOR_EXPERT_REVIEW: "Escalate for expert review",
+};
+
+const REVIEW_DECISIONS = [
+  ["CONCUR_NO_FURTHER_ACTION", "Concur with screening: no further action"],
+  ["REFER_FOR_PHYSICAL_INSPECTION", "Refer for physical document inspection"],
+  ["DOCUMENT_UNVERIFIABLE", "Document could not be verified"],
+  ["ESCALATE_TO_SUPERVISOR", "Escalate to supervisor"],
+];
+
+const STAGE_BADGE = { COMPLETED: "pass", FAILED: "fail", UNAVAILABLE: "fail", NOT_APPLICABLE: "warn", SKIPPED: "warn" };
+
+function describePersistence(persistence) {
+  if (persistence.status === "STORED") {
+    const until = persistence.expires_at ? new Date(persistence.expires_at).toLocaleString() : "retention expiry";
+    return "stored (redacted) until " + until;
+  }
+  if (persistence.status === "FAILED") return "NOT stored (storage error)";
+  return "not stored";
+}
 
 export default function ResultsView({ 
   result, 
@@ -29,13 +54,11 @@ export default function ResultsView({
   const [activeTab, setActiveTab] = useState("overview");
   const [showEla, setShowEla] = useState(false);
 
-  // Officer sign-off form state
-  const [officerId, setOfficerId] = useState("SSB-OFC-409");
-  const [officerName, setOfficerName] = useState("Insp. Rajesh Sharma");
-  const [officerDecision, setOfficerDecision] = useState("CLEARED_FOR_ENTRY");
+  // Reviewer form state. Reviewer identity is taken from the bearer token on the server.
+  const [officerDecision, setOfficerDecision] = useState("REFER_FOR_PHYSICAL_INSPECTION");
   const [overrideAi, setOverrideAi] = useState(false);
   const [officerNotes, setOfficerNotes] = useState("");
-  const [officerKeyInput, setOfficerKeyInput] = useState(getOfficerKey());
+  const [tokenInput, setTokenInput] = useState(getReviewerToken());
 
   if (!result) {
     return (
@@ -54,20 +77,18 @@ export default function ResultsView({
 
   const handleOfficerSubmit = (e) => {
     e.preventDefault();
-    if (officerKeyInput.trim()) {
-      setOfficerKey(officerKeyInput.trim());
-    }
+    if (tokenInput.trim()) setReviewerToken(tokenInput.trim());
     onSubmitOfficerReview({
-      officer_id: officerId,
-      officer_name: officerName,
       decision: officerDecision,
       override_ai_verdict: overrideAi,
-      notes: officerNotes || "Standard border screening protocol verified.",
+      notes: officerNotes || null,
     });
   };
 
-  const riskLevel = result.risk_assessment?.level || "LOW";
-  const verdictText = (result.risk_assessment?.verdict || "CLEARED").replace(/_/g, " ");
+  const riskLevel = result.risk_assessment?.level || "MEDIUM";
+  const verdictText = VERDICT_LABELS[result.risk_assessment?.verdict] || "Result unavailable";
+  const unavailable = result.risk_assessment?.unavailable_signals || [];
+  const persistence = result.persistence || {};
 
   return (
     <div className="results-container">
@@ -75,19 +96,25 @@ export default function ResultsView({
       <div className={`advisory-verdict-banner ${riskLevel.toLowerCase()}`}>
         <div className="verdict-main-info">
           <div className="advisory-label-row">
-            <span className="advisory-pill">Advisory Screening Result</span>
-            <span className="accuracy-disclaimer">
-              DocShield is an independent AI-assisted document screening prototype and is not an official government verification service. Registry checks are simulated demonstration data.
+            <span className="advisory-pill">PROTOTYPE · ADVISORY ONLY</span>
+            <span className="accuracy-disclaimer" role="note">
+              {result.advisory_notice ||
+                "DocShield is an AI-assisted screening prototype, not a government verification service. Registry checks use simulated demo data. A qualified human reviewer is responsible for every decision."}
             </span>
           </div>
 
           <h2 className="verdict-title">
-            {verdictText} ({riskLevel} RISK)
+            {verdictText} ({riskLevel} indicator level)
           </h2>
 
           <p className="verdict-action">
-            {result.risk_assessment?.recommended_action || "Allow passage after standard physical check."}
+            {result.risk_assessment?.recommended_action || "Manual review by a qualified reviewer is required."}
           </p>
+          {unavailable.length > 0 && (
+            <p className="verdict-action">
+              <strong>Not evaluated:</strong> {unavailable.join(", ").replace(/_/g, " ")}
+            </p>
+          )}
         </div>
 
         <div className="verdict-score-box">
@@ -95,7 +122,9 @@ export default function ResultsView({
             {result.risk_assessment?.score ?? 0}
             <span className="score-max"> / 100</span>
           </div>
-          <span className="score-label">Composite Risk Index</span>
+          <span className="score-label" title={result.risk_assessment?.score_interpretation}>
+            Heuristic score (not a probability)
+          </span>
         </div>
       </div>
 
@@ -103,7 +132,7 @@ export default function ResultsView({
       <div className="docket-meta-bar">
         <div className="meta-items">
           <span className="meta-item">
-            Docket ID: <strong className="mono">{result.case_id}</strong>
+            Case ID: <strong className="mono">{result.case_id}</strong>
           </span>
           <span className="meta-separator">•</span>
           <span className="meta-item">
@@ -114,13 +143,17 @@ export default function ResultsView({
             Status:{" "}
             {result.officer_review?.reviewed ? (
               <span className="status-badge pass">
-                <Check size={12} /> Officer Adjudicated
+                <Check size={12} /> Reviewed
               </span>
             ) : (
               <span className="status-badge warn">
-                <AlertTriangle size={12} /> Pending Officer Adjudication
+                <AlertTriangle size={12} /> Awaiting human review
               </span>
             )}
+          </span>
+          <span className="meta-separator">•</span>
+          <span className="meta-item">
+            Case record: <strong>{describePersistence(persistence)}</strong>
           </span>
         </div>
 
@@ -194,9 +227,31 @@ export default function ResultsView({
           className={`tab-link officer-tab ${activeTab === "officer" ? "active" : ""}`}
           onClick={() => setActiveTab("officer")}
         >
-          7. Officer Clearance Console
+          7. Reviewer Console
         </button>
       </nav>
+
+      {Array.isArray(result.pipeline) && result.pipeline.length > 0 && (
+        <div className="section-card" aria-label="Pipeline stages executed">
+          <h3 className="section-card-title">
+            <Activity size={18} />
+            <span>Pipeline stages (as reported by the backend)</span>
+          </h3>
+          <table className="docket-table">
+            <tbody>
+              {result.pipeline.map((st) => (
+                <tr key={st.stage}>
+                  <td className="table-label">{st.stage.replace(/_/g, " ")}</td>
+                  <td className="table-value">
+                    <span className={`status-badge ${STAGE_BADGE[st.status] || "warn"}`}>{st.status}</span>
+                    {st.detail ? <span className="mono"> {st.detail}</span> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* TAB 1: OVERVIEW */}
       {activeTab === "overview" && (
@@ -686,53 +741,51 @@ export default function ResultsView({
         </div>
       )}
 
-      {/* TAB 7: OFFICER CLEARANCE CONSOLE */}
+      {/* TAB 7: REVIEWER CONSOLE */}
       {activeTab === "officer" && (
         <div className="tab-pane">
           <div className="section-card">
             <h3 className="section-card-title">
               <Shield size={18} />
-              <span>Duty Clearance Officer Adjudication Console</span>
+              <span>Human Reviewer Console</span>
             </h3>
 
             <div className="info-box">
               <Info size={16} />
               <span>
-                <strong>Statutory Adjudication Requirement:</strong> AI screening provides advisory evidence signals only. 
-                A designated clearance officer must make the final statutory adjudication and sign off on this docket.
+                Automated screening provides advisory signals only. A qualified reviewer must examine the
+                document and record their own assessment. Recording a review does not grant or deny anything
+                to anyone; it is an entry in the case audit log.
               </span>
             </div>
 
-            {/* Signed Docket Box if already signed */}
             {result.officer_review?.reviewed && (
               <div className="signed-docket-banner">
                 <div className="signed-title">
                   <CheckCircle size={20} />
-                  <span>DOCKET OFFICIALLY ADJUDICATED &amp; RECORDED</span>
+                  <span>Reviewer assessment recorded</span>
                 </div>
                 <table className="docket-table">
                   <tbody>
                     <tr>
-                      <td className="table-label">Adjudicating Officer</td>
+                      <td className="table-label">Reviewer</td>
                       <td className="table-value">
                         {result.officer_review.officer_name} ({result.officer_review.officer_id})
                       </td>
                     </tr>
                     <tr>
-                      <td className="table-label">Final Decision</td>
+                      <td className="table-label">Assessment</td>
                       <td className="table-value bold mono">
                         {result.officer_review.decision?.replace(/_/g, " ")}
                       </td>
                     </tr>
                     <tr>
-                      <td className="table-label">AI Override Discretion</td>
-                      <td className="table-value">
-                        {result.officer_review.override_ai_verdict ? "YES (Officer Discretion Exercised)" : "NO (Concurs with AI Advisory)"}
-                      </td>
+                      <td className="table-label">Differs from automated result</td>
+                      <td className="table-value">{result.officer_review.override_ai_verdict ? "Yes" : "No"}</td>
                     </tr>
                     <tr>
-                      <td className="table-label">Officer Notes</td>
-                      <td className="table-value">{result.officer_review.notes}</td>
+                      <td className="table-label">Notes</td>
+                      <td className="table-value">{result.officer_review.notes || "None"}</td>
                     </tr>
                     <tr>
                       <td className="table-label">Timestamp</td>
@@ -743,49 +796,24 @@ export default function ResultsView({
               </div>
             )}
 
-            {/* Adjudication Sign-Off Form */}
+            {persistence.status !== "STORED" ? (
+              <div className="form-status-alert">
+                This result was not stored, so a review cannot be recorded against it.
+              </div>
+            ) : (
             <form onSubmit={handleOfficerSubmit} className="officer-form">
               <div className="form-grid-2">
                 <div className="form-field-group">
-                  <label className="form-label" htmlFor="officerBadge">Officer Badge ID</label>
-                  <input
-                    id="officerBadge"
-                    type="text"
-                    required
-                    className="form-input"
-                    value={officerId}
-                    onChange={(e) => setOfficerId(e.target.value)}
-                    placeholder="e.g. SSB-DEL-409"
-                  />
-                </div>
-
-                <div className="form-field-group">
-                  <label className="form-label" htmlFor="officerName">Officer Name &amp; Rank</label>
-                  <input
-                    id="officerName"
-                    type="text"
-                    required
-                    className="form-input"
-                    value={officerName}
-                    onChange={(e) => setOfficerName(e.target.value)}
-                    placeholder="e.g. Insp. Rajesh Sharma"
-                  />
-                </div>
-              </div>
-
-              <div className="form-grid-2">
-                <div className="form-field-group">
-                  <label className="form-label" htmlFor="officerDecision">Adjudication Decision</label>
+                  <label className="form-label" htmlFor="officerDecision">Reviewer assessment</label>
                   <select
                     id="officerDecision"
                     className="form-select"
                     value={officerDecision}
                     onChange={(e) => setOfficerDecision(e.target.value)}
                   >
-                    <option value="CLEARED_FOR_ENTRY">CLEARED FOR ENTRY (Grant Passage)</option>
-                    <option value="REFERRED_TO_SECONDARY">REFERRED TO SECONDARY INSPECTION (Mandatory Physical Check)</option>
-                    <option value="DENIED_ENTRY">DENIED ENTRY (Refusal of Entry / Void Credential)</option>
-                    <option value="DETAINED">DETAINED (Immediate Supervisor Alert)</option>
+                    {REVIEW_DECISIONS.map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
                   </select>
                 </div>
 
@@ -796,22 +824,23 @@ export default function ResultsView({
                       checked={overrideAi}
                       onChange={(e) => setOverrideAi(e.target.checked)}
                     />
-                    <span>Override AI Advisory Verdict under Officer Discretion</span>
+                    <span>My assessment differs from the automated result</span>
                   </label>
                 </div>
               </div>
 
               <div className="form-field-group">
-                <label className="form-label" htmlFor="officerKeySignoff">
-                  <span>Officer Authorization Key (X-Officer-Key)</span>
+                <label className="form-label" htmlFor="reviewerToken">
+                  <span>Reviewer access token</span>
                 </label>
                 <input
-                  id="officerKeySignoff"
+                  id="reviewerToken"
                   type="password"
+                  autoComplete="off"
                   className="form-input"
-                  value={officerKeyInput}
-                  onChange={(e) => setOfficerKeyInput(e.target.value)}
-                  placeholder="Enter authorized X-Officer-Key for statutory sign-off..."
+                  value={tokenInput}
+                  onChange={(e) => setTokenInput(e.target.value)}
+                  placeholder="Personal reviewer token issued by your administrator"
                 />
               </div>
 
@@ -823,7 +852,8 @@ export default function ResultsView({
                   className="form-textarea"
                   value={officerNotes}
                   onChange={(e) => setOfficerNotes(e.target.value)}
-                  placeholder="Record operational or physical inspection remarks justifying this decision..."
+                  maxLength={2000}
+                  placeholder="Record what you examined and why you reached this assessment"
                 />
               </div>
 
@@ -839,9 +869,10 @@ export default function ResultsView({
                 disabled={reviewSubmitting}
               >
                 <CheckCircle size={18} />
-                <span>{reviewSubmitting ? "Submitting Sign-off..." : "Sign & Record Official Adjudication"}</span>
+                <span>{reviewSubmitting ? "Recording…" : "Record reviewer assessment"}</span>
               </button>
             </form>
+            )}
           </div>
         </div>
       )}

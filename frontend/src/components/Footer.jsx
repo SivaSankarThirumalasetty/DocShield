@@ -37,14 +37,14 @@ export default function Footer({ onNavigate }) {
             <li><span>Verhoeff Checksum Algorithm (D5)</span></li>
             <li><span>128-d Metric Learning (dlib ResNet)</span></li>
             <li><span>Error Level Analysis (ELA 90% JPEG)</span></li>
-            <li><span>Section 29 Aadhaar Privacy Masking</span></li>
+            <li><span>Aadhaar number masking (last 4 digits)</span></li>
           </ul>
         </div>
       </div>
 
       <div className="footer-bottom">
         <span>© 2026 DocShield Project • Smart India Hackathon 2026 Prototype</span>
-        <span>Advisory Screening System • Human-in-the-Loop Final Clearance</span>
+        <span>Advisory prototype • Human reviewer makes every decision</span>
       </div>
     </footer>
   );

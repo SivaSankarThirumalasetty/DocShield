@@ -25,6 +25,8 @@ export default function ScreeningPage({
   docTypeHint,
   setDocTypeHint,
   loading,
+  onCancel,
+  serviceState,
   error,
   onAnalyze,
   onReset,
@@ -32,7 +34,6 @@ export default function ScreeningPage({
 }) {
   const [docDragging, setDocDragging] = useState(false);
   const [personDragging, setPersonDragging] = useState(false);
-  const [processingStage, setProcessingStage] = useState(0);
 
   const docInputRef = useRef(null);
   const personInputRef = useRef(null);
@@ -387,7 +388,7 @@ export default function ScreeningPage({
             onClick={onAnalyze}
             disabled={loading || !docFile}
           >
-            Retry Verification
+            Retry Screening
           </button>
         </div>
       )}
@@ -398,16 +399,19 @@ export default function ScreeningPage({
           <div className="processing-header">
             <Clock size={20} className="spinner-icon" />
             <div>
-              <h3 className="processing-title">Executing Multi-Layer Verification Pipeline...</h3>
-              <p className="processing-subtitle">Analyzing document structure, checksums, ELA discrepancies, and face biometrics</p>
+              <h3 className="processing-title">Screening in progress…</h3>
+              <p className="processing-subtitle">
+                The pipeline below is running on the server. The result lists which stages actually completed.
+                {serviceState !== "ready" && " The engine may be starting from cold, which can take a minute or two."}
+              </p>
             </div>
           </div>
 
           <div className="stages-progress-list">
             {stages.map((stage, idx) => (
               <div key={idx} className="stage-progress-item">
-                <div className="stage-status-icon active">
-                  <CheckCircle2 size={16} />
+                <div className="stage-status-icon">
+                  <Clock size={16} />
                 </div>
                 <div className="stage-content">
                   <span className="stage-title">{stage.title}</span>
@@ -416,6 +420,9 @@ export default function ScreeningPage({
               </div>
             ))}
           </div>
+          <button type="button" className="btn-retry" onClick={onCancel}>
+            Cancel
+          </button>
         </div>
       ) : (
         /* Action Execution Button */
@@ -427,7 +434,7 @@ export default function ScreeningPage({
             disabled={!docFile || loading}
           >
             <Search size={20} />
-            <span>Execute Multi-Layer Verification</span>
+            <span>Run Screening</span>
           </button>
         </div>
       )}

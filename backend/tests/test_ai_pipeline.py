@@ -103,4 +103,4 @@ def test_risk_engine_never_converts_unavailable_to_clear():
     assert res.evidence_states["watchlist"] == "UNAVAILABLE"
     assert res.evidence_states["biometrics"] == "UNAVAILABLE"
     assert res.score >= 40  # Both unavailable penalized
-    assert res.verdict != "CLEARED"  # Must NOT be cleared
+    assert res.verdict != "NO_ADVERSE_INDICATORS"  # Must NOT be cleared

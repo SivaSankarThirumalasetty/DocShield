@@ -1,7 +1,15 @@
 import React, { useState } from "react";
 import { Shield, Menu, X, FileText, CheckCircle2, History, BookOpen, Lock } from "lucide-react";
 
-export default function Navbar({ activePage, setActivePage, health, hasResult }) {
+const STATUS_LABELS = {
+  checking: { text: "Checking service…", dot: "offline", title: "Checking the screening engine status." },
+  ready: { text: "Engine ready", dot: "healthy", title: "Readiness check passed: OCR, face and registry modules loaded." },
+  starting: { text: "Engine starting…", dot: "offline", title: "The screening container is starting or a module is not loaded yet." },
+  unavailable: { text: "Engine unavailable", dot: "offline", title: "The screening service did not respond to its readiness check." },
+};
+
+export default function Navbar({ activePage, setActivePage, service, hasResult }) {
+  const status = STATUS_LABELS[service?.state] || STATUS_LABELS.checking;
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const navItems = [
@@ -39,7 +47,7 @@ export default function Navbar({ activePage, setActivePage, health, hasResult })
               <span className="prototype-pill">PROTOTYPE MODE</span>
             </div>
             <div className="brand-tagline">
-              Automated Document Forensics & Biometric Screening
+              AI-assisted document screening (advisory prototype)
             </div>
           </div>
         </div>
@@ -69,13 +77,11 @@ export default function Navbar({ activePage, setActivePage, health, hasResult })
         <div className="navbar-right">
           <div 
             className="system-health-pill" 
-            title={health?.status === "healthy" ? `Backend Service v${health.version || "2.1"} operational` : "Connecting to screening service..."}
+            title={status.title}
             aria-live="polite"
           >
-            <span className={`status-indicator-dot ${health?.status === "healthy" ? "healthy" : "offline"}`} />
-            <span className="status-indicator-text">
-              {health?.status === "healthy" ? "Engine Ready" : "Connecting..."}
-            </span>
+            <span className={`status-indicator-dot ${status.dot}`} />
+            <span className="status-indicator-text">{status.text}</span>
           </div>
 
           <button

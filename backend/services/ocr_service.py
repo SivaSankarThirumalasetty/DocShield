@@ -32,6 +32,7 @@ class OCRService:
     def __init__(self):
         self.tesseract_configured = False
         self.easyocr_reader = None
+        self.easyocr_error: Optional[str] = None
         self._check_tesseract()
 
     def _check_tesseract(self):
@@ -57,8 +58,19 @@ class OCRService:
 
     @property
     def is_engine_available(self) -> bool:
-        """Indicates if at least one OCR backend (Tesseract or EasyOCR) is configured or importable."""
-        return self.tesseract_configured or EASYOCR_AVAILABLE or (self.easyocr_reader is not None)
+        """True only when an OCR engine is actually usable (binary found or model loaded)."""
+        return self.tesseract_configured or (self.easyocr_reader is not None)
+
+    def warm_up(self) -> None:
+        """Loads the EasyOCR model eagerly so readiness reflects real usability."""
+        self._get_easyocr_reader()
+
+    def status(self) -> Dict[str, Any]:
+        return {
+            "tesseract": self.tesseract_configured,
+            "easyocr_installed": EASYOCR_AVAILABLE,
+            "easyocr_loaded": self.easyocr_reader is not None,
+        }
 
     def _get_easyocr_reader(self):
         if self.easyocr_reader is None and EASYOCR_AVAILABLE:
@@ -74,13 +86,18 @@ class OCRService:
                     if (candidate / "craft_mlt_25k.pth").exists() and (candidate / "english_g2.pth").exists():
                         model_dir = str(candidate)
                         break
+                # Production images bake the weights in; never download at request time.
+                download_enabled = os.environ.get("EASYOCR_DOWNLOAD_ENABLED", "true").lower() in ("true", "1", "yes")
                 self.easyocr_reader = easyocr.Reader(
                     ['en'],
                     gpu=False,
                     model_storage_directory=model_dir,
+                    download_enabled=download_enabled,
                     verbose=False,
                 )
+                self.easyocr_error = None
             except Exception as e:
+                self.easyocr_error = type(e).__name__
                 logger.warning(f"Could not initialize EasyOCR reader: {e}")
         return self.easyocr_reader
 

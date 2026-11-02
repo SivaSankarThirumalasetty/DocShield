@@ -41,11 +41,11 @@ export default function PrivacyPage() {
           <div className="privacy-card-icon">
             <EyeOff size={22} />
           </div>
-          <h3 className="privacy-card-title">2. Mandatory Aadhaar Redaction</h3>
+          <h3 className="privacy-card-title">2. Aadhaar Number Masking</h3>
           <p className="privacy-card-text">
-            In compliance with the Aadhaar Act (2016) and UIDAI privacy directives, any recognized 12-digit Indian Aadhaar number 
+            Any recognised 12-digit Aadhaar number 
             is automatically masked to <code>XXXX-XXXX-1234</code> prior to any database persistence or client-side rendering. 
-            Unmasked Aadhaar numbers are never logged or stored.
+            Stored case records never contain unmasked numbers, names, dates of birth, addresses, OCR text or images. Masking is a safeguard, not a claim of legal compliance; that requires qualified legal review.
           </p>
         </div>
 
@@ -56,7 +56,7 @@ export default function PrivacyPage() {
           </div>
           <h3 className="privacy-card-title">3. Zero External AI Transmission</h3>
           <p className="privacy-card-text">
-            Every computer vision, OCR, forensic, and biometric model runs 100% locally inside the DocShield application container. 
+            Every computer vision, OCR, forensic, and biometric model runs inside the DocShield backend container on Cloudflare; the container has no outbound internet access. 
             <strong>No credential data, names, dates of birth, or biometric embeddings are ever transmitted to third-party cloud AI vendors</strong> (such as OpenAI, Google Cloud Vision, or AWS Rekognition).
           </p>
         </div>
@@ -68,8 +68,8 @@ export default function PrivacyPage() {
           </div>
           <h3 className="privacy-card-title">4. Cryptographic Session Isolation</h3>
           <p className="privacy-card-text">
-            Each screening transaction issues a 32-byte cryptographically secure session token (<code>X-Session-Token</code>) stored as a SHA-256 hash. 
-            Other users cannot browse, search, or enumerate your screening docket without holding either your session token or an authorized clearance officer key.
+            Each stored screening issues a 32-byte random session token (<code>X-Session-Token</code>); only its SHA-256 hash is stored. 
+            Other users cannot browse, search, or enumerate your screening docket without your session token. Reviewers authenticate with personal, expiring tokens and can see only their own tenant&apos;s records. Stored records are deleted automatically after the retention period (24 hours by default).
           </p>
         </div>
 
@@ -80,7 +80,7 @@ export default function PrivacyPage() {
           </div>
           <h3 className="privacy-card-title">5. Defensive Anti-Caching Headers</h3>
           <p className="privacy-card-text">
-            All screening API responses are served with strict HTTP defensive headers (<code>Cache-Control: no-store, no-cache, must-revalidate, private, max-age=0</code>) 
+            All screening API responses are served with strict HTTP defensive headers (<code>Cache-Control: no-store</code>) 
             to prevent intermediate proxies, browser caches, or device disks from persisting sensitive document metadata.
           </p>
         </div>

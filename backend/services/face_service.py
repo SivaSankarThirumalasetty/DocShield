@@ -309,7 +309,7 @@ class FaceService:
                     evidence_state="INDETERMINATE"
                 )
         except Exception as e:
-            logger.error(f"Biometric calculation error: {e}")
+            logger.error(f"Biometric calculation error: {type(e).__name__}")
             return FaceVerificationResult(
                 document_face_detected=True,
                 person_face_detected=True,
@@ -320,7 +320,7 @@ class FaceService:
                 quality_flags=combined_quality,
                 document_face_crop_base64=doc_crop_b64,
                 person_face_crop_base64=person_crop_b64,
-                notes=f"Biometric embedding calculation failed: {str(e)}",
+                notes="Face embedding calculation failed; manual comparison required.",
                 evidence_state="INDETERMINATE"
             )
 

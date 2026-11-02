@@ -1,201 +1,87 @@
-# DocShield Production Deployment & Cloudflare Migration Guide
+# Deployment
 
-> **Status**: **CLOUDFLARE HYBRID PRODUCTION ARCHITECTURE READY**  
-> **Mandatory Regulatory Disclosures**:
-> - *"DocShield is an independent AI-assisted document screening prototype and is not an official government verification service."*
-> - *"Registry checks are simulated demonstration data."*
+## Prerequisites (owner actions)
 
----
+1. **Workers Paid plan** on the Cloudflare account (Containers are not available on Free).
+2. **GitHub repository secrets** (Settings → Secrets and variables → Actions):
+   * `CLOUDFLARE_ACCOUNT_ID`
+   * `CLOUDFLARE_API_TOKEN` — create a *custom* token with only:
+     * Account · Workers Scripts · Edit
+     * Account · Containers · Edit
+     * Account · D1 · Edit
+     * Account · Workers Observability · Read (optional, for logs)
+     * User · User Details · Read (Wrangler identity check)
+3. **GitHub Environment** named `production` with required reviewers (gates every deploy).
+4. **Branch protection** on `master`: require the CI checks and a pull-request review.
 
-## 1. Architecture Overview (Phase 2 Decision)
+Resources already created on the account (2026-11-02):
 
-DocShield uses a **split edge-frontend + container-backend architecture** that leverages Cloudflare's global edge network for the React SPA and security perimeter while keeping CPU/memory-intensive Python computer vision and biometric models on a container-capable Python runtime.
-
-```
-+---------------------------------------------------------------------------------+
-|                                 Public Internet                                 |
-|                            (Border Officer Browser)                             |
-+---------------------------------------------------------------------------------+
-                                        |
-                                        v  HTTPS (TLS 1.3 / Cloudflare Edge)
-+---------------------------------------------------------------------------------+
-| 1. CLOUDFLARE PAGES (Frontend & Edge Security)                                  |
-|    - Hosts compiled React 19 + Vite 7 static bundle (frontend/dist)             |
-|    - Enforces CSP, X-Frame-Options: DENY, X-Content-Type-Options: nosniff       |
-|    - Serves SPA routes via _redirects (/* -> /index.html 200)                   |
-|    - Optional Edge Reverse Proxy via Pages Function (functions/api/[[path]].js) |
-+---------------------------------------------------------------------------------+
-                                        |
-                                        v  HTTPS API Calls (VITE_API_BASE_URL)
-+---------------------------------------------------------------------------------+
-| 2. CLOUDFLARE CONTAINER BACKEND (FastAPI / Uvicorn / Docker)                    |
-|    - Primary Route: DocShieldBackendContainer (port 8000, standard-2)           |
-|    - Public API Gateway: https://docshield.sivasankar-t1606.workers.dev         |
-|    - Strict CORS (No wildcard '*' in production; restricted to Worker origin)   |
-|    - Cloudflare CF-Connecting-IP aware sliding-window rate limiting             |
-|    - Offloaded threadpool execution for CPU-bound OCR, ELA, and dlib inference  |
-+---------------------------------------------------------------------------------+
-                                        |
-              +-------------------------+-------------------------+
-              v                         v                         v
-+--------------------------+ +-----------------------+ +--------------------------+
-| 3. AI / CV / ML PIPELINE | | 4. EPHEMERAL MEMORY   | | 5. PERSISTENCE & STORAGE |
-| - Tesseract / EasyOCR    | | - In-memory Pillow /  | | - SQLite WAL (cases)     |
-| - OpenCV Caffe SSD Face  | |   NumPy buffers       | | - mock_database.json     |
-| - dlib 128-d ResNet      | | - Zero disk retention | | - Optional R2 / D1       |
-| - JPEG ELA Forensics     | |   for raw uploads     | |   migration path         |
-+--------------------------+ +-----------------------+ +--------------------------+
-```
-
-### Why Python CV/ML Runs in a Cloudflare Container (Not V8 Isolate Workers)
-Cloudflare Workers V8 isolates (including Python Workers via Pyodide/WASM) impose a **128 MB memory limit** and do not support native compiled C++/Fortran shared libraries or system binaries required by DocShield:
-- `dlib` / `face_recognition` (compiled C++ 128-D ResNet face encoding model)
-- `opencv-python-headless` (C++ OpenCV DNN Caffe SSD `res10_300x300_ssd_iter_140000_fp16.caffemodel`)
-- `tesseract-ocr` (native C++ optical character recognition binary) & `easyocr` / `torch` (PyTorch CPU tensors requiring ~1.26 GB Peak RSS)
-
----
-
-## 2. Local Development Setup
-
-### 2.1 Backend (FastAPI + Python 3.11)
-```bash
-# 1. From repository root, install dependencies using Python 3.11
-py -3.11 -m pip install -r backend/requirements.txt
-
-# 2. Create local .env from template (optional)
-cp .env.example .env
-
-# 3. Start Uvicorn development server
-py -3.11 -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-### 2.2 Frontend (React 19 + Vite)
-```bash
-# 1. Navigate to frontend directory
-cd frontend
-
-# 2. Install exact dependencies from package-lock.json
-npm ci
-
-# 3. Start Vite dev server (proxies /api, /health, /ready to http://127.0.0.1:8000)
-npm run dev
-```
-
----
-
-## 3. Cloudflare Workers & Container Deployment (`docshield.sivasankar-t1606.workers.dev`)
-
-### 3.1 Build & Static Assets Pipeline
-- **Frontend Source Directory**: `frontend/`
-- **Production Build Command**: `npm run build` (runs `npm --prefix frontend ci && npm --prefix frontend run build` from `/` or `vite build` from `frontend/`)
-- **Compiled Output Directory**: `frontend/dist` (`./dist` relative to `frontend/`)
-- **Worker & Container Entrypoint**: [`worker.js`](../worker.js) (and [`frontend/worker.js`](../frontend/worker.js))
-- **Wrangler Configuration**: [`wrangler.toml`](../wrangler.toml) (and [`frontend/wrangler.toml`](../frontend/wrangler.toml))
-  - `[assets]` binds `./frontend/dist` (or `./dist`) to `env.ASSETS`.
-  - Serves `/assets/*.js` with `application/javascript; charset=utf-8` and `/assets/*.css` with `text/css; charset=utf-8`.
-  - Blocks `/src/*` and returns `404 Not Found` (`text/plain`) for any missing `.js`/`.css`/image file so the browser never receives `text/html` for module scripts.
-  - Serves compiled `/index.html` (`200 OK`) for extensionless SPA client routes (`/`, `/screening`, `/history`, `/methodology`, `/privacy`).
-  - Routes `/api/*`, `/health`, and `/ready` to `DocShieldBackendContainer` (`env.DOCSHIELD_BACKEND`) on port `8000`.
-
-### 3.2 Step-by-Step Cloudflare Workers Builds Setup
-1. Open the [Cloudflare Dashboard](https://dash.cloudflare.com/) → **Compute (Workers & Pages)** → **`docshield`** → **Settings** → **Build**.
-2. Configure the **Build settings**:
-   | Setting | Recommended Value (Root = `/`) | Alternative Value (Root = `frontend`) |
-   |---|---|---|
-   | **Production branch** | `cloudflare-migration` | `cloudflare-migration` |
-   | **Root directory** | `/` | `frontend` |
-   | **Build command** | `npm run build` | `npm ci && npm run build` |
-   | **Deploy command** | `npx wrangler deploy` | `npx wrangler deploy` |
-3. *(Optional)* Under **Build variables**, set:
-   - `VITE_API_BASE_URL` = `https://docshield.sivasankar-t1606.workers.dev` *(already defaulted in `frontend/.env.production`)*
-   - `VITE_APP_MODE` = `PROTOTYPE`
-4. Save and trigger **Retry build / Deploy** on the latest commit of `cloudflare-migration`.
-
----
-
-## 4. Backend Container Sizing & Resource Profile (Phase 6)
-
-### 4.1 Empirical Resource & Latency Profile
-Measured on the real DocShield AI pipeline (`backend/tests/performance_report.json` & `backend/tests/evaluation_report.json`):
-- **Cold Module & Model Initialization**: `7.24 seconds`
-- **Base Memory Footprint (RSS after startup)**: `490.0 MB`
-- **Peak Memory Footprint (RSS during OCR + Caffe SSD + dlib + ELA)**: **`1,263.0 MB` (~1.26 GB)**
-- **Warm Request Duration (`/api/analyze-document`)**:
-  - Container Runtime (Tesseract + Caffe SSD + dlib + ELA): **`1,114 ms` (~1.11 seconds)**
-  - Local CPU with EasyOCR fallback: **`1,820 ms – 2,550 ms` (~1.8–2.5 seconds)**
-
-### 4.2 Evaluation of Cloudflare Container Instance Tiers
-
-| Platform / Tier | RAM / CPU | Timeout | Suitability Verdict |
-|---|---|---|---|
-| **Cloudflare Container (`standard-2`)** | **6 GiB RAM / 1 vCPU / 12 GB Disk** | 15m idle (`sleepAfter`) | **PASS (Recommended Primary)** — Configured in `wrangler.toml`, easily handles 1.26 GB peak RSS. |
-| **Cloudflare Container (`standard-1`)** | **4 GiB RAM / 0.5 vCPU / 8 GB Disk** | 15m idle (`sleepAfter`) | **PASS (Minimum Viable Tier)** — 4 GiB RAM accommodates the 1.26 GB peak RSS. |
-| **Cloudflare Container (`basic` / `lite`)** | 256 MiB – 1 GiB RAM | 15m idle | **FAIL (Unsuitable)** — <1.26 GB RAM causes Out-Of-Memory (OOM) termination during EasyOCR/PyTorch inference. |
-| **Cloudflare Workers Isolate** | 128 MB WASM | 30s CPU | **FAIL (Incompatible)** — Cannot execute native C++ `dlib`, `OpenCV DNN`, `Tesseract`, or 1.26 GB PyTorch models. |
-
-### 4.3 Standalone Backend Deployment (`backend/Dockerfile`)
-To build and run the FastAPI container locally or on any Docker host:
-```bash
-# Build standalone backend container from repository root
-docker build -f backend/Dockerfile -t docshield-backend:latest .
-
-# Run standalone backend container
-docker run -p 8000:8000 \
-  -e DOCSHIELD_ENV=production \
-  -e DOCSHIELD_MODE=PROTOTYPE \
-  -e FRONTEND_ORIGIN=https://docshield.sivasankar-t1606.workers.dev \
-  -e DOCSHIELD_OFFICER_KEY=replace-with-strong-32-char-secret \
-  docshield-backend:latest
-```
-
----
-
-## 5. Storage Architecture Evaluation (Phase 7)
-
-| Storage Component | Current Implementation | Production Behavior & Cloudflare R2 / D1 Evaluation |
+| Resource | Name | ID |
 |---|---|---|
-| **Uploaded Document & Face Images** | **Ephemeral In-Memory (`io.BytesIO`)** | Controlled by `ENABLE_SOURCE_IMAGE_STORAGE=false`. Raw biometric uploads are **never** written to disk, satisfying privacy-by-design. Small base64 thumbnails are stored inside the case record. **Cloudflare R2** is only needed if long-term archival of raw high-res evidence files is desired in a future phase. |
-| **Case Audit History & Sessions** | **SQLite WAL (`backend/data/docshield.db`)** | Uses SQLAlchemy with `PRAGMA journal_mode=WAL` and `PRAGMA synchronous=NORMAL`, plus automatic 24-hour retention pruning (`DATA_RETENTION_HOURS=24`). Routed to a singleton container instance (`docshield-api-singleton`). |
-| **Watchlist Registry** | **Read-Only JSON (`backend/data/mock_database.json`)** | Bundled with the backend container; loaded into memory at startup with graceful `UNAVAILABLE` degradation if missing. |
-| **Pre-trained CV/ML Weights** | **Container Layer (`backend/models_weights/`)** | Bundled directly in the Docker image (`deploy.prototxt`, `res10_300x300_ssd_iter_140000_fp16.caffemodel`, `craft_mlt_25k.pth`, `english_g2.pth`) so cold starts never depend on external weight downloads. |
+| Worker | `docshield` | existing (`workers.dev` URL below) |
+| D1 | `docshield-db` | `ccbed719-5867-444d-8c21-22aceca7a284` (migration `0001` applied) |
 
----
+Production URL: `https://docshield.sivasankar-t1606.workers.dev`
 
-## 6. Environment Variables Reference (Phase 4, 8 & 13)
+## Normal release
 
-### 6.1 PUBLIC Variables (Frontend — Cloudflare Workers)
-> **IMPORTANT**: Variables prefixed with `VITE_` are statically compiled into the public frontend JavaScript bundle. Never place secrets here.
+1. Open a PR into `master`. CI (`.github/workflows/ci.yml`) runs: frontend lint/build/audit,
+   Worker unit tests and wrangler config validation, backend tests + API contract test +
+   pip-audit, Docker image build with full-pipeline tests inside the image, gitleaks.
+2. Merge. `deploy.yml` re-runs CI, then (after environment approval):
+   `npm run build` → `wrangler d1 migrations apply` → `wrangler deploy --var GIT_COMMIT:<sha>`
+   (builds and pushes the container image, uploads assets, rolls out the container).
+3. The job polls `/api/ready` until it returns 200 **and** reports the new commit, then runs
+   live smoke tests: static 200, missing asset 404, unknown API JSON 404, `/api/cases` 401,
+   a real screening of `sample_data/aadhaar_invalid_checksum.png` (OCR must complete,
+   checksum must fail, record must be stored), retrieval with/without the token (200/404).
+4. Any failed step fails the workflow. See [ROLLBACK.md](ROLLBACK.md).
 
-| Variable | Value (Development) | Value (Production) | Purpose |
-|---|---|---|---|
-| `VITE_API_BASE_URL` | `http://127.0.0.1:8000` (or `""` via Vite proxy) | `https://docshield.sivasankar-t1606.workers.dev` | Target Cloudflare Worker & Container API endpoint |
-| `VITE_APP_MODE` | `PROTOTYPE` | `PROTOTYPE` | Controls UI prototype disclaimer badges |
+Note: `wrangler deploy` activates the new Worker before the container rollout finishes, and
+the steps are not transactional. The readiness gate catches a broken rollout; it cannot
+prevent the brief window in which new Worker code talks to the old container.
 
-### 6.2 PRIVATE Variables (Backend — Cloudflare Container / Docker Runtime)
-> **SECURITY**: Configure these only in the backend container environment. Never commit `.env` files.
+## Manual deploy (owner machine)
 
-| Variable | Default / Example | Purpose |
+Requires Docker running and `npx wrangler login`.
+
+```bash
+npm ci && npm run build
+```
+
+```bash
+npx wrangler d1 migrations apply docshield-db --remote
+```
+
+```bash
+npx wrangler deploy --var GIT_COMMIT:$(git rev-parse HEAD)
+```
+
+## Reviewer accounts
+
+```bash
+node scripts/create-officer-token.mjs --id REV-001 --name "A. Reviewer" --days 30 --apply
+```
+
+The token is printed once. Revoke with the command in the script header.
+
+## Configuration
+
+| Name | Where | Purpose |
 |---|---|---|
-| `DOCSHIELD_ENV` | `production` | Disables `/api/docs`, `/api/redoc`, and `/api/debug`; enables strict error sanitization |
-| `DOCSHIELD_MODE` | `PROTOTYPE` | Enforces prototype disclosures (`DEMO`, `PROTOTYPE`, `OPERATIONAL`) |
-| `DOCSHIELD_OFFICER_KEY` | *(Set a strong 32+ char secret)* | Required in `X-Officer-Key` header for `/api/cases` and `/api/case/{id}/review` |
-| `FRONTEND_ORIGIN` | `https://docshield.sivasankar-t1606.workers.dev` | Primary Cloudflare Worker frontend origin permitted by CORS |
-| `CORS_ORIGINS` | `https://docshield.sivasankar-t1606.workers.dev` | Comma-separated list of allowed origins (wildcard `*` is stripped in production) |
-| `CORS_ORIGIN_REGEX` | `^https://([a-zA-Z0-9-]+\.)*docshield(-[a-zA-Z0-9-]+)?\.(pages|workers)\.dev$` | Permits Cloudflare Workers & Pages preview/production subdomains |
-| `DATABASE_URL` | `sqlite:///./backend/data/docshield.db` | SQLAlchemy database URL |
-| `MAX_UPLOAD_SIZE_BYTES` | `10485760` (10 MB) | Enforces 10 MB upload cap |
-| `MAX_IMAGE_PIXELS` | `10000000` (10 MP) | Prevents image decompression bomb attacks |
-| `MAX_CONCURRENT_ANALYSIS` | `2` | Bounded semaphore preventing memory exhaustion under concurrent load |
-| `RATE_LIMIT_ANALYZE_PER_MINUTE` | `10` | Per-IP rate limit on `/api/analyze-document` using `CF-Connecting-IP` |
-| `ENABLE_SOURCE_IMAGE_STORAGE` | `false` | Purges raw biometric images immediately after in-memory processing |
+| `DOCSHIELD_MODE` | `wrangler.jsonc` vars | Mode label (`PROTOTYPE`) |
+| `CASE_RETENTION_HOURS` | vars | D1 case retention (1–720, default 24) |
+| `APP_VERSION`, `GIT_COMMIT` | vars / deploy flag | Reported by `/api/ready` |
+| Container env | `worker/src/index.js`, `backend/Dockerfile` | `PERSISTENCE_MODE=none`, `PRELOAD_MODELS=true`, `REQUIRE_FULL_PIPELINE=true`, `EASYOCR_DOWNLOAD_ENABLED=false` |
 
----
+No secrets are required by the Worker at runtime. Never put secrets in `VITE_*` variables.
 
-## 7. Production Verification Checklist (Phase 14)
+## Troubleshooting
 
-- [x] `cloudflare-migration` branch created without modifying `master`.
-- [x] Frontend build (`npm ci && npm run build`) succeeds cleanly into `frontend/dist`.
-- [x] Frontend `VITE_API_BASE_URL` configured to `https://docshield.sivasankar-t1606.workers.dev` in production and `http://127.0.0.1:8000` in development.
-- [x] Backend CORS hardened (no wildcard `*` in production; supports `FRONTEND_ORIGIN` and `*.workers.dev` / `*.pages.dev`).
-- [x] Backend rate limiter extracts real client IP from Cloudflare `CF-Connecting-IP`.
-- [x] All 77 automated pytest tests and empirical sample evaluations pass.
+| Symptom | Check |
+|---|---|
+| `/api/ready` 503 with `backend.status = "timeout"` | First request after deploy or after sleep; model load takes ~1–2 min. `npx wrangler containers list`, Workers logs. |
+| `/api/ready` 503 with a `checks` entry `false` | That model/binary is missing from the image; inspect CI container job logs. |
+| `persistence.status = "FAILED"` | D1 binding/migration. `npx wrangler d1 migrations list docshield-db --remote`. |
+| 429 | Edge rate limit (10/min/IP per location). |
+| Deploy fails "Docker CLI is needed" | Run from CI or start Docker locally. |

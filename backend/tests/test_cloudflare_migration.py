@@ -3,28 +3,23 @@ from fastapi.testclient import TestClient
 from backend.main import app
 from backend.core.config import settings
 from backend.core.rate_limit import InMemoryRateLimiter
+import pytest
+from backend.services.ocr_service import ocr_service
+from backend.services import face_service as face_module
 
 client = TestClient(app)
 SAMPLE_DIR = Path(__file__).resolve().parent.parent.parent / "sample_data"
 
 
-def test_cloudflare_pages_cors_allowed():
-    """Verify Cloudflare Workers and Pages production/preview subdomains are allowed via CORS."""
-    for origin in [
-        "https://docshield.sivasankar-t1606.workers.dev",
-        "https://docshield.pages.dev",
-        "https://cloudflare-migration.docshield.pages.dev",
-    ]:
-        res = client.options(
-            "/api/analyze-document",
-            headers={
-                "Origin": origin,
-                "Access-Control-Request-Method": "POST",
-                "Access-Control-Request-Headers": "Content-Type,X-Officer-Key",
-            },
-        )
-        assert res.status_code == 200
-        assert res.headers.get("access-control-allow-origin") == origin
+def test_local_dev_origin_allowed_production_origins_not_needed():
+    """Production is same-origin through the Worker; only the Vite dev origin needs CORS."""
+    res = client.options(
+        "/api/analyze-document",
+        headers={"Origin": "http://localhost:5173", "Access-Control-Request-Method": "POST"},
+    )
+    assert res.status_code == 200
+    assert res.headers.get("access-control-allow-origin") == "http://localhost:5173"
+    assert res.headers.get("access-control-allow-credentials") is None
 
 
 def test_unauthorized_origin_cors_blocked():
@@ -46,13 +41,6 @@ def test_no_wildcard_in_configured_cors_origins():
     assert "*" not in settings.cors_origins
 
 
-def test_cloudflare_forwarded_https_sets_hsts():
-    """Verify X-Forwarded-Proto: https from Cloudflare edge triggers Strict-Transport-Security."""
-    res = client.get("/api/health", headers={"X-Forwarded-Proto": "https"})
-    assert res.status_code == 200
-    assert "max-age=31536000" in res.headers.get("strict-transport-security", "")
-
-
 def test_cf_connecting_ip_extraction():
     """Verify rate limiter extracts true client IP from CF-Connecting-IP header."""
     class DummyReq:
@@ -62,6 +50,10 @@ def test_cf_connecting_ip_extraction():
     assert InMemoryRateLimiter._extract_client_ip(DummyReq()) == "203.0.113.42"
 
 
+@pytest.mark.skipif(
+    not (ocr_service.tesseract_configured and face_module.FACE_REC_AVAILABLE),
+    reason="Requires Tesseract and dlib/face_recognition (run inside the backend Docker image).",
+)
 def test_end_to_end_real_samples_and_verify_face():
     """Execute real sample documents and face verification through the FastAPI pipeline."""
     aadhaar_valid = (SAMPLE_DIR / "aadhaar_valid.png").read_bytes()

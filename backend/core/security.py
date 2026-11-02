@@ -136,9 +136,15 @@ def hash_token(raw_token: str) -> str:
     """Computes SHA-256 hash of a raw token."""
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
+def is_valid_officer_key(candidate: Optional[str]) -> bool:
+    """Constant-time comparison; always False when no officer key is configured."""
+    if not settings.officer_key or not candidate:
+        return False
+    return secrets.compare_digest(candidate.encode("utf-8"), settings.officer_key.encode("utf-8"))
+
 def verify_officer_token(x_officer_key: Optional[str] = Header(None)) -> str:
-    """Enforces authorization for officer review, audit logs, and case queries."""
-    if not x_officer_key or x_officer_key != settings.officer_key:
+    """Enforces authorization for officer review, audit logs, and case queries (local SQLite mode)."""
+    if not is_valid_officer_key(x_officer_key):
         logger.warning("Unauthorized attempt to access protected officer endpoint.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

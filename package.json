@@ -1,18 +1,28 @@
 {
   "name": "docshield",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.5"
+  },
   "scripts": {
     "dev": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend ci && npm --prefix frontend run build",
-    "preview": "npm --prefix frontend run preview",
-    "deploy": "npx wrangler deploy",
-    "deploy:worker": "npx wrangler deploy --containers-rollout=none",
-    "deploy:container": "npx wrangler deploy",
-    "tunnel": "powershell -ExecutionPolicy Bypass -File scripts/start-cloudflare-tunnel.ps1"
+    "lint": "npm --prefix frontend run lint",
+    "test:worker": "node --test \"worker/test/*.test.mjs\"",
+    "check:config": "wrangler deploy --dry-run --containers-rollout=none --outdir .wrangler/dry-run",
+    "db:migrate": "wrangler d1 migrations apply docshield-db --remote",
+    "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "@cloudflare/containers": "^0.3.7"
+    "@cloudflare/containers": "0.3.7"
+  },
+  "devDependencies": {
+    "wrangler": "4.156.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "workerd@1.20261101.1": true
   }
 }

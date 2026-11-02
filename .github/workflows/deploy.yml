@@ -1,0 +1,100 @@
+name: Deploy to Cloudflare
+
+# Production deploys only from master, after the full CI suite passes.
+# Requires repository secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID
+# (see docs/DEPLOYMENT.md for the minimum token permissions), and a GitHub
+# Environment named "production" (add required reviewers there to gate releases).
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  PRODUCTION_URL: https://docshield.sivasankar-t1606.workers.dev
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: production
+      url: ${{ env.PRODUCTION_URL }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Check credentials are configured
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::CLOUDFLARE_API_TOKEN secret missing"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::CLOUDFLARE_ACCOUNT_ID secret missing"; exit 1; }
+      - run: npm ci
+      - run: npm run build
+      - name: Record the currently active version (rollback target)
+        run: npx wrangler deployments list --json > previous-deployments.json || echo "[]" > previous-deployments.json
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply docshield-db --remote
+      - name: Deploy Worker, static assets and container image
+        run: npx wrangler deploy --var GIT_COMMIT:${{ github.sha }} | tee deploy.log
+      - name: Wait for real readiness (container cold start + model load)
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o ready.json -w '%{http_code}' --max-time 100 "$PRODUCTION_URL/api/ready" || true)
+            commit=$(python3 -c "import json;print(json.load(open('ready.json')).get('edge',{}).get('commit',''))" 2>/dev/null || true)
+            echo "attempt $i: HTTP $code commit=$commit"
+            if [ "$code" = "200" ] && [ "$commit" = "${{ github.sha }}" ]; then break; fi
+            sleep 15
+          done
+          cat ready.json; echo
+          test "$code" = "200" && test "$commit" = "${{ github.sha }}"
+      - name: Live smoke tests (synthetic samples only)
+        run: |
+          set -e
+          # Static assets and routing
+          test "$(curl -s -o /dev/null -w '%{http_code}' $PRODUCTION_URL/)" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' $PRODUCTION_URL/assets/does-not-exist.js)" = "404"
+          curl -s $PRODUCTION_URL/api/nope | grep -q '"detail"'
+          # Unauthenticated reviewer endpoints are closed
+          test "$(curl -s -o /dev/null -w '%{http_code}' $PRODUCTION_URL/api/cases)" = "401"
+          # Real screening through the production pipeline
+          curl -sf -F "document=@sample_data/aadhaar_invalid_checksum.png" -F doc_type_hint=AADHAAR \
+            $PRODUCTION_URL/api/analyze-document -o result.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open("result.json"))
+          stages = {s["stage"]: s["status"] for s in d["pipeline"]}
+          print("case", d["case_id"], "verdict", d["risk_assessment"]["verdict"], "stages", stages, "persistence", d["persistence"]["status"])
+          assert stages["ocr"] == "COMPLETED"
+          assert d["validation"]["overall_valid"] is False
+          assert d["persistence"]["status"] == "STORED" and d["session_token"]
+          open("case.env", "w").write(f"CASE_ID={d['case_id']}\nTOKEN={d['session_token']}\n")
+          PY
+          . ./case.env
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Session-Token: $TOKEN" $PRODUCTION_URL/api/case/$CASE_ID)" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' $PRODUCTION_URL/api/case/$CASE_ID)" = "404"
+      - name: Deployment summary
+        if: always()
+        run: |
+          {
+            echo "### DocShield production deployment"
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- URL: $PRODUCTION_URL"
+            echo "- Readiness: \`$(cat ready.json 2>/dev/null | head -c 600)\`"
+            echo '- Rollback: see docs/ROLLBACK.md (npx wrangler rollback; prior versions: npx wrangler deployments list)'
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f case.env result.json

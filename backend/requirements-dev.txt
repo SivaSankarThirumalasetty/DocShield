@@ -1,0 +1,14 @@
+# Test / CI tooling. The core test suite runs without the heavy ML stack;
+# the Docker CI job runs the same tests inside the production image.
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.2
+python-multipart==0.0.33
+numpy==2.4.6
+opencv-python-headless==4.14.0.94
+pillow==13.0.0
+pytesseract==0.3.13
+sqlalchemy==2.1.6
+pytest==9.2.0
+httpx==0.28.1
+pip-audit==2.10.1
