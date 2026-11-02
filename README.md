@@ -11,12 +11,14 @@ lookup against a **simulated** demo registry, then explains the combined advisor
 > A qualified human reviewer makes every decision. See
 > [docs/PRODUCT_LIMITATIONS.md](docs/PRODUCT_LIMITATIONS.md).
 
-Live: https://docshield.sivasankar-t1606.workers.dev (Cloudflare Workers + Containers + D1)
+Live: https://docshield.sivasankar-t1606.workers.dev — runs entirely on free tiers (Cloudflare Workers Free + D1, backend on a Render free web service). See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the limits this implies (slow, sleeps when idle, Tesseract-only OCR).
 
 ## Architecture
 
-Browser → Cloudflare Worker (static React app + `/api/*`) → Cloudflare Container (FastAPI,
-Tesseract, EasyOCR, OpenCV, dlib) and D1 (redacted case records, reviewer tokens, audit log).
+Browser → Cloudflare Worker (static React app + `/api/*`, D1 for redacted case records, reviewer
+tokens and audit log) → FastAPI backend (Tesseract, OpenCV, dlib) on a Render free web service,
+called with a shared edge secret. An optional paid mode runs the full image (incl. EasyOCR/PyTorch)
+on Cloudflare Containers (`wrangler.containers.jsonc`).
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```

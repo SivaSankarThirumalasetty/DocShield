@@ -4,7 +4,7 @@
 
 | Data | Where | Retention |
 |---|---|---|
-| Uploaded images | Worker memory → container memory during one request | Discarded after the response. Never written to disk or D1. |
+| Uploaded images | Worker → backend (Render, Singapore region) memory during one request, over HTTPS | Discarded after the response. Never written to disk or D1. Render is a third-party processor: review its terms/DPA before real data. |
 | Full screening result (incl. previews, OCR text, extracted fields) | HTTP response to the submitter only (`Cache-Control: no-store`) | Not stored |
 | Redacted case record | D1 `cases.result_json` | `CASE_RETENTION_HOURS` (24 h), hourly purge |
 | Session token | Returned once; D1 stores SHA-256 only | With the case |
@@ -31,13 +31,15 @@ Act, the DPDP Act 2023 or any other law. That requires qualified legal review.
 * **Uploads**: content-type and Content-Length checked at the edge (≤ 20 MB per request);
   backend checks magic bytes, decodes, enforces 10 MB / 10 MP per image (decompression-bomb guard),
   sanitises filenames.
-* **Abuse**: edge Rate Limiting binding (10 analyses/min/IP per location, approximate);
-  backend semaphore with bounded queue wait; one container instance.
+* **Abuse**: edge Rate Limiting binding (6 analyses/min/IP per location, approximate);
+  backend semaphore with bounded queue wait; one backend instance.
 * **Headers**: HSTS, `nosniff`, `X-Frame-Options: DENY`, strict CSP (`script-src 'self'`,
   `connect-src 'self'`), JSON-only CSP on API responses, `no-store` on all API responses.
 * **Errors**: only a short `detail` string leaves the system; tracebacks stay in server logs.
-* **Container**: non-root, no internet egress (`enableInternet = false`), models baked in,
-  no interactive docs or debug routes.
+* **Backend**: non-root image, no interactive docs or debug routes; every request except `/health`
+  must carry the edge secret (`EDGE_SHARED_SECRET`, stored as a Cloudflare Worker secret and a Render
+  env var, never in git). Rotate by updating both, then redeploying.
+* **Paid Container mode** additionally disables internet egress (`enableInternet = false`).
 * **Supply chain**: exact dependency pins, lockfiles, pinned GitHub Action SHAs,
   `npm audit`, `pip-audit`, gitleaks on full history in CI.
 

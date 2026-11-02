@@ -1,6 +1,5 @@
 import io
 import re
-import os
 import hashlib
 import secrets
 from pathlib import Path
@@ -52,10 +51,13 @@ def sanitize_filename(filename: Optional[str]) -> str:
     """Strips directory traversal sequences (..) and special characters from user filenames."""
     if not filename:
         return "upload.bin"
-    # Take basename only to defeat directory traversal
-    base = os.path.basename(filename)
+    # Take the last path component for BOTH separators: os.path.basename on Linux
+    # does not split on "\", so "..\\..\\win.ini" would otherwise survive intact.
+    base = re.split(r"[\\/]", filename)[-1]
     # Remove all non-alphanumeric characters except dot, dash, underscore
     clean = re.sub(r'[^a-zA-Z0-9._-]', '', base)
+    # No leading dots: rules out "..", "." and hidden-file names.
+    clean = clean.lstrip(".")
     return clean or "upload.bin"
 
 def validate_image_upload(raw_bytes: bytes, field_name: str = "document") -> Image.Image:

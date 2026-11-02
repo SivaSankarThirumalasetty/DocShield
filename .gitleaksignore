@@ -1,0 +1,4 @@
+# Reviewed false positives (placeholder text, not credentials). One fingerprint per line:
+# <commit>:<file>:<rule>:<line>
+# 2026-11-02: "DOCSHIELD_OFFICER_KEY=replace-with-..." placeholder in an old DEPLOYMENT.md example.
+72f7574588a75648a4531044707f805ef8d594bd:docs/DEPLOYMENT.md:generic-api-key:152

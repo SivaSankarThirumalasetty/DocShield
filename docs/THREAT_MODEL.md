@@ -22,4 +22,6 @@ Worker ↔ D1; CI ↔ Cloudflare API (API token).
 | T12 | Model / supply-chain compromise | Malicious dependency or weights | Exact pins, lockfiles, pinned actions, weights baked at build | No hash-pinned pip install; weights downloaded at build time over HTTPS without checksum verification |
 | T13 | CI credential theft | Workflow injection | Minimal-scope token in environment-gated job; PRs from forks get no secrets | Repository admins can read the deployment environment |
 | T14 | Misuse of output | Treating advisory score as a decision | Advisory wording, visible notices, review console | Users can still over-trust the tool |
+| T16 | Bypassing the edge | Calling the public Render URL directly to skip rate limits/auth | Backend rejects every request except `/health` without `X-DocShield-Edge-Auth` (constant-time); secret only in Worker secret + Render env | Secret rotation is manual; `/health` is public (no data) |
+| T17 | Free-tier exhaustion | Traffic burns Render hours / D1 daily limits | Edge rate limits; 24 h retention; service suspends rather than bills (no payment method) | Site degrades to "engine unavailable" until reset |
 | T15 | Adversarial documents | Crafted images to pass checks | Multiple independent signals, INDETERMINATE on missing evidence | Signals are heuristic; not robust to a determined forger |

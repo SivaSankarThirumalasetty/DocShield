@@ -1,20 +1,22 @@
 # Architecture
 
 ```
-Browser ──HTTPS──▶ Cloudflare Worker "docshield"  (worker/src/index.js)
+Browser ──HTTPS──▶ Cloudflare Worker "docshield"  (worker/src/index.js, Workers Free)
                      │  static assets (frontend/dist, Workers Static Assets)
                      │  /api/*  ──▶ auth, rate limits, size checks, D1 persistence
                      │
-                     ├──▶ Cloudflare Container  DocShieldBackendContainer  (backend/Dockerfile)
-                     │      FastAPI on :8000, stateless (PERSISTENCE_MODE=none), no internet egress
-                     │      Tesseract + EasyOCR (PyTorch CPU) · OpenCV SSD face detector ·
-                     │      dlib/face_recognition · ELA · Verhoeff/ICAO validators · risk fusion
+                     ├──HTTPS + X-DocShield-Edge-Auth──▶ Render free web service (backend/Dockerfile.free)
+                     │      FastAPI, stateless (PERSISTENCE_MODE=none), rejects calls without the secret
+                     │      Tesseract · OpenCV SSD face detector · dlib/face_recognition · ELA ·
+                     │      Verhoeff/ICAO validators · risk fusion   (no EasyOCR/PyTorch: 512 MB limit)
                      │
                      └──▶ D1 "docshield-db"  (migrations/)
                             cases (redacted) · officers (token hashes) · audit_log
 ```
 
-Nothing runs outside Cloudflare. There is no Railway, Render, tunnel or personal-PC dependency.
+Hosting is ₹0: Cloudflare Workers Free + D1 Free, Render Free. No personal PC or tunnel.
+Optional paid mode: `wrangler.containers.jsonc` + `worker/src/container.js` run `backend/Dockerfile`
+(full image incl. EasyOCR) in a Cloudflare Container instead of Render.
 
 ## Request routing (Worker, `worker/src/app.js`)
 
@@ -24,7 +26,7 @@ Nothing runs outside Cloudflare. There is no Railway, Render, tunnel or personal
 |---|---|
 | `GET /api/health`, `/health` | Proxied to container `/api/health` (computed module states). 503 JSON if the container does not respond. |
 | `GET /api/ready`, `/ready` | Container `/ready` **and** a D1 `SELECT 1`. 200 only when both are ready. Includes deployed commit. |
-| `POST /api/analyze-document` | Rate limit (per IP) → content-type & Content-Length checks (≤ 20 MB + framing) → container → on 200, redact and insert into D1, return result + one-time session token. |
+| `POST /api/analyze-document` | Rate limit (per IP) → content-type & Content-Length checks (≤ 20 MB + framing) → backend → on 200 the body is streamed through unparsed (10 ms CPU limit); the backend's pre-redacted `X-DocShield-Case-Record` header is re-redacted and stored in D1; the session token and storage status are returned as `X-DocShield-Session-Token` / `X-DocShield-Persistence`. |
 | `POST /api/verify-face` | Rate limit + size checks → container. |
 | `GET /api/case/:id` | D1 only. Submitter `X-Session-Token` (hash, constant-time) **or** reviewer bearer token in the same tenant. Otherwise 404. |
 | `GET /api/cases` | Reviewer only, tenant-scoped, paginated. |
@@ -35,7 +37,13 @@ Nothing runs outside Cloudflare. There is no Railway, Render, tunnel or personal
 
 Cron (`17 * * * *`) deletes expired cases and audit rows older than 90 days.
 
-## Container lifecycle
+## Backend lifecycle (free mode)
+
+* Render free: sleeps after 15 min idle; the first request waits ~1 min. Worker timeouts: 90 s for health/ready, 120 s for analysis; the UI keeps polling `/api/ready` (10 s interval, max 20 tries) and shows "Engine starting…".
+* `READY_REQUIRES=ocr_tesseract,face_detector,face_embedding,demo_registry`; EasyOCR is reported unavailable.
+* `MAX_CONCURRENT_ANALYSIS=1`; queue wait ≤ 20 s then 503 + `Retry-After`.
+
+## Container lifecycle (optional paid mode)
 
 * One named instance (`docshield-backend-v1`), `standard-2` (1 vCPU, 6 GiB, 12 GB disk), `sleepAfter = 15m`.
 * `startAndWaitForPorts` waits up to 180 s: uvicorn binds only after the FastAPI lifespan has loaded EasyOCR (`PRELOAD_MODELS=true`).

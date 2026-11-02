@@ -31,6 +31,12 @@ npm ci && npm run build && npx wrangler deploy --var GIT_COMMIT:<GOOD_SHA>
 Then confirm `curl https://docshield.sivasankar-t1606.workers.dev/api/ready` returns 200 with
 `edge.commit` equal to `<GOOD_SHA>`.
 
+## Backend on Render
+
+Render keeps previous deploys: Dashboard → docshield-backend → *Events* → choose an earlier
+successful deploy → *Rollback*. Or revert the commit on `master`; Render auto-deploys it.
+After rollback, confirm `/api/ready` on the site returns 200.
+
 ## D1
 
 Migrations are additive (`CREATE … IF NOT EXISTS`). Do not roll back by dropping tables.
@@ -52,4 +58,4 @@ The old Railway service and the tunnel-to-PC setup are **not** deleted by this c
 Do not retire them until Cloudflare is independently verified and the owner approves.
 The Worker no longer routes to them, so restoring them would require redeploying an
 older commit (pre-`cloudflare-migration` rewrite), which reintroduces finding C1
-(authentication bypass). Prefer rolling back within Cloudflare.
+(authentication bypass). Prefer rolling back within Cloudflare/Render.
