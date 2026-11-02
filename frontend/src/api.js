@@ -2,7 +2,8 @@
 // production goes through the Cloudflare Worker, local dev through the Vite proxy.
 export const API_BASE = "";
 
-const ANALYZE_TIMEOUT_MS = 150000; // includes a possible container cold start
+// The free backend (0.1 CPU) can take a minute to wake and ~1-2 minutes per screening.
+const ANALYZE_TIMEOUT_MS = 300000;
 const DEFAULT_TIMEOUT_MS = 30000;
 const READY_TIMEOUT_MS = 95000;
 const REVIEWER_TOKEN_KEY = "docshield_reviewer_token";
@@ -122,7 +123,15 @@ export async function analyzeDocument(docFile, personFile = null, docTypeHint = 
   const res = await fetchWithTimeout(`${API_BASE}/api/analyze-document`, { method: "POST", body: formData, signal }, ANALYZE_TIMEOUT_MS);
   if (!res.ok) throw await errorFrom(res);
   const data = await res.json();
-  currentSessionToken = data?.session_token || null;
+  // The edge adds the case token and storage status as headers (the body is the
+  // backend's result, streamed through unmodified).
+  data.session_token = res.headers.get("X-DocShield-Session-Token") || null;
+  try {
+    data.persistence = JSON.parse(res.headers.get("X-DocShield-Persistence") || "null") || data.persistence;
+  } catch (_) {
+    // Malformed header: keep the backend's own persistence field.
+  }
+  currentSessionToken = data.session_token;
   return data;
 }
 

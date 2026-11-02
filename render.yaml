@@ -1,0 +1,19 @@
+# Render Blueprint for the DocShield screening backend on Render's FREE plan.
+# Create it from the Render dashboard: New > Blueprint > this repository.
+# Free web service: 512 MB RAM, 0.1 CPU, sleeps after 15 min idle, 750 h/month.
+# Do NOT add a payment method if the goal is a guaranteed ₹0 bill.
+services:
+  - type: web
+    name: docshield-backend
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: master
+    dockerfilePath: ./backend/Dockerfile.free
+    dockerContext: ./backend
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Same value as the GitHub secret EDGE_SHARED_SECRET (set in the dashboard).
+      - key: EDGE_SHARED_SECRET
+        sync: false

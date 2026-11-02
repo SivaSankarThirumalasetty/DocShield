@@ -8,6 +8,13 @@ import { sha256Hex } from "../src/auth.js";
 import { maskDocumentNumber, redactResultForStorage } from "../src/redact.js";
 import { purgeExpired } from "../src/cases.js";
 import { createD1 } from "./d1-shim.mjs";
+import { originBackendFetch } from "../src/index.js";
+
+const b64url = (obj) => Buffer.from(JSON.stringify(obj)).toString("base64url");
+// The backend sends the full result as the body and a redacted record in a header.
+// Tests send an UNREDACTED record to prove the Worker re-redacts defensively.
+const analyzeResponse = (result = backendResult()) =>
+  Response.json(result, { headers: { "X-DocShield-Case-Record": b64url(result) } });
 
 const MIGRATIONS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "migrations");
 const ORIGIN = "https://docshield.example.workers.dev";
@@ -71,7 +78,7 @@ beforeEach(() => {
     const path = new URL(req.url).pathname;
     if (path === "/ready") return Response.json({ status: "ready", checks: { ocr_tesseract: true }, required: ["ocr_tesseract"] });
     if (path === "/api/health") return Response.json({ status: "healthy", modules: {} });
-    if (path === "/api/analyze-document") return Response.json(backendResult());
+    if (path === "/api/analyze-document") return analyzeResponse();
     return Response.json({ detail: "nope" }, { status: 404 });
   };
   env = { DB: createD1(MIGRATIONS), ASSETS: makeAssets(), CASE_RETENTION_HOURS: "24", APP_VERSION: "test", GIT_COMMIT: "abc" };
@@ -154,14 +161,16 @@ test("analyze stores a redacted record in D1 and returns a session token", async
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("Cache-Control"), "no-store");
   const body = await res.json();
-  assert.ok(body.session_token && body.session_token.length >= 40);
-  assert.equal(body.persistence.status, "STORED");
-  // The submitter still receives the full computed result once.
+  const token = res.headers.get("X-DocShield-Session-Token");
+  assert.ok(token && token.length >= 40);
+  assert.equal(JSON.parse(res.headers.get("X-DocShield-Persistence")).status, "STORED");
+  assert.equal(res.headers.get("X-DocShield-Case-Record"), null, "internal header must not reach the browser");
+  // The submitter still receives the full computed result once, unmodified.
   assert.equal(body.document_info.name, "Aarav Sharma");
 
   const row = await env.DB.prepare("SELECT * FROM cases WHERE case_id = ?1").bind(body.case_id).first();
   assert.ok(row);
-  assert.notEqual(row.session_token_hash, body.session_token);
+  assert.notEqual(row.session_token_hash, token);
   for (const secret of ["Aarav", "14/08/1994", "data:image", "data:FACE", "GOVERNMENT OF INDIA"]) {
     assert.ok(!row.result_json.includes(secret), `stored record leaked ${secret}`);
   }
@@ -173,10 +182,35 @@ test("D1 failure is reported honestly, without a session token", async () => {
     throw new Error("D1 down");
   };
   const res = await handleRequest(multipart(), env, deps);
-  const body = await res.json();
   assert.equal(res.status, 200);
-  assert.equal(body.session_token, null);
-  assert.equal(body.persistence.status, "FAILED");
+  assert.equal(res.headers.get("X-DocShield-Session-Token"), null);
+  assert.equal(JSON.parse(res.headers.get("X-DocShield-Persistence")).status, "FAILED");
+  assert.equal((await res.json()).case_id, "DS-20261102-ABCDEF123456");
+});
+
+test("missing case-record header means not stored, never a fake token", async () => {
+  backendImpl = async () => Response.json(backendResult());
+  const res = await handleRequest(multipart(), env, deps);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("X-DocShield-Session-Token"), null);
+  assert.equal(JSON.parse(res.headers.get("X-DocShield-Persistence")).status, "FAILED");
+});
+
+test("origin mode: refuses without config, sends the edge secret", async () => {
+  await assert.rejects(originBackendFetch(new Request("https://x/api/ready"), {}), /not configured/);
+  await assert.rejects(originBackendFetch(new Request("https://x/api/ready"), { BACKEND_URL: "http://plain.example", EDGE_SHARED_SECRET: "s" }), /not configured/);
+  const realFetch = globalThis.fetch;
+  let seen;
+  globalThis.fetch = async (url, init) => {
+    seen = { url, auth: init.headers.get("X-DocShield-Edge-Auth") };
+    return new Response("{}");
+  };
+  try {
+    await originBackendFetch(new Request("https://edge/api/ready?x=1"), { BACKEND_URL: "https://api.example.com/", EDGE_SHARED_SECRET: "edge-secret" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.deepEqual(seen, { url: "https://api.example.com/api/ready?x=1", auth: "edge-secret" });
 });
 
 test("upload limits enforced at the edge before reaching the container", async () => {
@@ -220,7 +254,8 @@ test("backend errors are relayed as sanitised JSON only", async () => {
 
 async function createCase() {
   const res = await handleRequest(multipart(), env, deps);
-  return res.json();
+  const body = await res.json();
+  return { case_id: body.case_id, session_token: res.headers.get("X-DocShield-Session-Token") };
 }
 
 test("case retrieval: submitter token works, wrong/absent token is 404", async () => {

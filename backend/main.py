@@ -1,3 +1,4 @@
+import hmac
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -50,6 +51,11 @@ class RequestGuardMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request_id = request.headers.get("cf-ray") or request.headers.get("x-request-id") or uuid.uuid4().hex
         request_id = request_id[:64]
+
+        if settings.edge_shared_secret and request.url.path != "/health":
+            supplied = request.headers.get("x-docshield-edge-auth", "")
+            if not hmac.compare_digest(supplied.encode("utf-8"), settings.edge_shared_secret.encode("utf-8")):
+                return JSONResponse(status_code=401, content={"detail": "Unauthorized."})
 
         content_length = request.headers.get("content-length")
         if request.method == "POST":

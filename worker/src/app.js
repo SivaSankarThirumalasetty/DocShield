@@ -98,20 +98,38 @@ async function handleAnalyze(request, env, deps, requestId) {
   if (response) return response;
   if (upstream.status !== 200) return relayBackendError(upstream, requestId);
 
-  const result = await upstream.json();
-  const retentionHours = Math.max(1, Math.min(720, Number(env.CASE_RETENTION_HOURS) || 24));
-  const sessionToken = randomToken();
+  // The full result (with image previews) is streamed through untouched: parsing it
+  // would exceed the free plan's 10 ms CPU budget. The backend supplies a small,
+  // already-redacted record in a header, which is what gets stored.
+  const headers = new Headers(upstream.headers);
+  const encodedRecord = headers.get("X-DocShield-Case-Record");
+  headers.delete("X-DocShield-Case-Record");
+
+  let persistence = { status: "FAILED", backend: "cloudflare-d1" };
+  let sessionToken = null;
   try {
-    const { expiresAt } = await storeCase(env.DB, result, { sessionToken, retentionHours });
-    result.session_token = sessionToken;
-    result.persistence = { status: "STORED", backend: "cloudflare-d1", redacted: true, expires_at: expiresAt };
+    if (!encodedRecord) throw new Error("backend did not supply a case record");
+    const record = JSON.parse(decodeBase64Url(encodedRecord));
+    const retentionHours = Math.max(1, Math.min(720, Number(env.CASE_RETENTION_HOURS) || 24));
+    const token = randomToken();
+    const { expiresAt } = await storeCase(env.DB, record, { sessionToken: token, retentionHours });
+    sessionToken = token;
+    persistence = { status: "STORED", backend: "cloudflare-d1", redacted: true, expires_at: expiresAt };
   } catch (err) {
     // The screening result is still returned, but no retrievable case exists.
     deps.log("persist_error", { requestId, error: String(err && err.message) });
-    result.session_token = null;
-    result.persistence = { status: "FAILED", backend: "cloudflare-d1" };
   }
-  return json(result, 200, { "X-Request-ID": requestId });
+
+  if (sessionToken) headers.set("X-DocShield-Session-Token", sessionToken);
+  headers.set("X-DocShield-Persistence", JSON.stringify(persistence));
+  headers.set("X-Request-ID", requestId);
+  return withApiHeaders(new Response(upstream.body, { status: 200, headers }), requestId);
+}
+
+function decodeBase64Url(value) {
+  const b64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
 }
 
 async function d1Ok(env) {

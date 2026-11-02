@@ -94,6 +94,17 @@ class Settings(BaseModel):
     require_full_pipeline: bool = Field(
         default_factory=lambda: os.getenv("REQUIRE_FULL_PIPELINE", "false").lower() in ("true", "1", "yes")
     )
+    # Comma-separated readiness requirements, overriding the defaults derived from
+    # REQUIRE_FULL_PIPELINE (e.g. the free Render image has no EasyOCR/PyTorch).
+    ready_requires_raw: str = Field(
+        default_factory=lambda: os.getenv("READY_REQUIRES", "").strip()
+    )
+    # When set, every request except /health must carry this value in
+    # X-DocShield-Edge-Auth. Used when the backend is reachable on the public
+    # internet (Render), so only the Cloudflare Worker can call it.
+    edge_shared_secret: str = Field(
+        default_factory=lambda: os.getenv("EDGE_SHARED_SECRET", "").strip()
+    )
     database_url: str = Field(
         default_factory=lambda: os.getenv("DATABASE_URL", f"sqlite:///{BACKEND_DIR / 'data' / 'docshield.db'}")
     )

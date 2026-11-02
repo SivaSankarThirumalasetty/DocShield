@@ -1,7 +1,10 @@
-// DocShield production configuration (Cloudflare Workers + Static Assets +
-// Containers + D1 + Rate Limiting). Deploy with `npm run deploy` (CI) after
-// `npm run build`. Requires the Workers Paid plan (Containers) and Docker at
-// deploy time to build backend/Dockerfile.
+// DocShield production configuration — Cloudflare Workers FREE plan.
+// Static assets + /api routing + D1 + rate limiting in the Worker; the Python
+// screening backend runs on a free remote host (Render) reached at BACKEND_URL
+// with the EDGE_SHARED_SECRET Worker secret. See docs/DEPLOYMENT.md.
+//
+// Deploy (CI):  npx wrangler deploy --var BACKEND_URL:<https url> --var GIT_COMMIT:<sha>
+// Secret:       npx wrangler secret put EDGE_SHARED_SECRET
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "docshield",
@@ -13,7 +16,7 @@
   "assets": {
     "directory": "./frontend/dist",
     "binding": "ASSETS",
-    // The Worker decides: /api/* goes to the container, unknown files get a real
+    // The Worker decides: /api/* goes to the backend, unknown files get a real
     // 404, and only extensionless navigations fall back to index.html.
     "run_worker_first": true,
     "not_found_handling": "none"
@@ -25,22 +28,12 @@
     "CASE_RETENTION_HOURS": "24"
   },
 
-  "containers": [
-    {
-      "class_name": "DocShieldBackendContainer",
-      "image": "./backend/Dockerfile",
-      // 1 vCPU / 6 GiB / 12 GB disk. EasyOCR + PyTorch + dlib need well over 1 GiB.
-      "instance_type": "standard-2",
-      "max_instances": 2
-    }
+  // v1 created the (now unused) container Durable Object class in the earlier
+  // deployment; v2 removes it because Containers are not available on the free plan.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["DocShieldBackendContainer"] },
+    { "tag": "v2", "deleted_classes": ["DocShieldBackendContainer"] }
   ],
-
-  "durable_objects": {
-    "bindings": [{ "name": "DOCSHIELD_BACKEND", "class_name": "DocShieldBackendContainer" }]
-  },
-
-  // Unchanged from the existing deployment so no Durable Object migration is needed.
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DocShieldBackendContainer"] }],
 
   "d1_databases": [
     {
@@ -53,7 +46,7 @@
 
   "ratelimits": [
     // Per client IP, per Cloudflare location (approximate by design).
-    { "name": "ANALYZE_LIMITER", "namespace_id": "4101", "simple": { "limit": 10, "period": 60 } },
+    { "name": "ANALYZE_LIMITER", "namespace_id": "4101", "simple": { "limit": 6, "period": 60 } },
     { "name": "AUTH_LIMITER", "namespace_id": "4102", "simple": { "limit": 10, "period": 60 } }
   ],
 

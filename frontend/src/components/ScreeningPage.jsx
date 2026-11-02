@@ -402,7 +402,7 @@ export default function ScreeningPage({
               <h3 className="processing-title">Screening in progress…</h3>
               <p className="processing-subtitle">
                 The pipeline below is running on the server. The result lists which stages actually completed.
-                {serviceState !== "ready" && " The engine may be starting from cold, which can take a minute or two."}
+                {serviceState !== "ready" && " The engine runs on a free host that sleeps when idle; waking it can take 1–2 minutes."}{" On the free tier one screening can take a minute or more."}
               </p>
             </div>
           </div>

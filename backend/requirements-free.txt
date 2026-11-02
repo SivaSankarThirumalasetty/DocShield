@@ -1,0 +1,19 @@
+# Runtime dependencies for the FREE-tier backend image (Render free: 512 MB RAM, 0.1 CPU).
+# Same pipeline as requirements.txt except EasyOCR/PyTorch, which need >1 GB RAM.
+# OCR uses Tesseract; the EasyOCR fallback is reported as unavailable, never faked.
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.2
+python-multipart==0.0.33
+numpy==2.4.6
+opencv-python-headless==4.14.0.94
+pillow==13.0.0
+pytesseract==0.3.13
+sqlalchemy==2.1.6
+# Prebuilt dlib 20.0.1 wheel (third-party build: github.com/alesanfra/dlib-wheels) so the
+# image builds without compiling dlib. face-recognition is installed with --no-deps
+# because it declares a dependency on the "dlib" distribution name.
+dlib-bin==20.0.1.post1
+face-recognition-models==0.3.0
+click==8.5.0
+setuptools==80.10.2

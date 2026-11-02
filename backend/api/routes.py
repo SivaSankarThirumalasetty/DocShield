@@ -1,9 +1,11 @@
 import asyncio
+import base64
+import json
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, List
-from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Query, Depends, Header, status
+from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Query, Depends, Header, Response, status
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -17,6 +19,7 @@ from ..core.security import (
     sanitize_filename
 )
 from ..core.rate_limit import analysis_semaphore, rate_limit_analysis
+from ..core.redaction import redact_result_for_storage
 from ..models.schemas import (
     HealthResponse,
     ScreeningResult,
@@ -72,9 +75,12 @@ def readiness_checks() -> dict:
         "face_embedding": face_module.FACE_REC_AVAILABLE,
         "demo_registry": db_service.is_loaded,
     }
-    required = ["ocr_tesseract", "face_detector", "demo_registry"]
-    if settings.require_full_pipeline:
-        required += ["ocr_easyocr", "face_embedding"]
+    if settings.ready_requires_raw:
+        required = [c.strip() for c in settings.ready_requires_raw.split(",") if c.strip() in checks]
+    else:
+        required = ["ocr_tesseract", "face_detector", "demo_registry"]
+        if settings.require_full_pipeline:
+            required += ["ocr_easyocr", "face_embedding"]
     if storage_service is not None:
         try:
             storage_service.list_cases(limit=1)
@@ -146,6 +152,7 @@ async def _acquire_slot():
     dependencies=[Depends(rate_limit_analysis)]
 )
 async def analyze_document(
+    response: Response,
     document: UploadFile = File(..., description="Document front scan or image"),
     person_image: Optional[UploadFile] = File(None, description="Optional person photo for face comparison"),
     doc_type_hint: Optional[str] = Form(None, description="Optional document type hint (AADHAAR, PASSPORT, PAN, VOTER_ID)")
@@ -156,9 +163,16 @@ async def analyze_document(
 
     await _acquire_slot()
     try:
-        return await _run_pipeline(document, person_image, hint)
+        case = await _run_pipeline(document, person_image, hint)
     finally:
         analysis_semaphore.release()
+
+    if storage_service is None:
+        # Stateless mode: hand the edge a pre-redacted record so it can persist the
+        # case without parsing the full (image-bearing) response body.
+        record = json.dumps(redact_result_for_storage(case.model_dump()), separators=(",", ":"))
+        response.headers["X-DocShield-Case-Record"] = base64.urlsafe_b64encode(record.encode("utf-8")).decode("ascii")
+    return case
 
 
 async def _run_pipeline(document: UploadFile, person_image: Optional[UploadFile], hint: Optional[str]) -> ScreeningResult:

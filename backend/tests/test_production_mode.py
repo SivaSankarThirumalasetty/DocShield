@@ -129,3 +129,39 @@ def test_redaction_removes_images_text_and_identity_fields():
     assert red["redacted"] is True
     # The original is not mutated.
     assert full["document_info"]["name"] == "Aarav Sharma"
+
+
+EDGE_PROBE = r"""
+import io, json, base64
+from PIL import Image
+from fastapi.testclient import TestClient
+from backend.main import app
+c = TestClient(app)
+buf = io.BytesIO(); Image.new("RGB", (400, 300), "white").save(buf, "PNG")
+ok = c.post("/api/analyze-document", headers={"X-DocShield-Edge-Auth": "edge-s3cret"},
+            files={"document": ("d.png", buf.getvalue(), "image/png")})
+rec = json.loads(base64.urlsafe_b64decode(ok.headers["X-DocShield-Case-Record"]))
+print(json.dumps({
+    "no_secret": c.get("/api/ready").status_code,
+    "wrong_secret": c.get("/api/ready", headers={"X-DocShield-Edge-Auth": "nope"}).status_code,
+    "health_open": c.get("/health").status_code,
+    "ok": ok.status_code,
+    "record_case": rec["case_id"] == ok.json()["case_id"],
+    "record_redacted": rec.get("redacted") is True and rec["document_preview_base64"] is None,
+    "body_has_preview": ok.json()["document_preview_base64"] is not None,
+}))
+"""
+
+
+def test_edge_secret_and_redacted_record_header():
+    res = _run_in_fresh_process(EDGE_PROBE, PERSISTENCE_MODE="none", EDGE_SHARED_SECRET="edge-s3cret")
+    assert res == {
+        "no_secret": 401, "wrong_secret": 401, "health_open": 200, "ok": 200,
+        "record_case": True, "record_redacted": True, "body_has_preview": True,
+    }
+
+
+def test_ready_requires_override():
+    res = _run_in_fresh_process(READY_PROBE, PERSISTENCE_MODE="none", READY_REQUIRES="demo_registry,face_detector")
+    assert res["body"]["required"] == ["demo_registry", "face_detector"]
+    assert res["status"] == 200

@@ -11,6 +11,7 @@ import { handleRequest } from "../src/app.js";
 import { createD1 } from "./d1-shim.mjs";
 
 const BACKEND_URL = process.env.BACKEND_URL;
+const EDGE_SECRET = process.env.EDGE_SHARED_SECRET || "";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ORIGIN = "https://docshield.test";
 
@@ -22,7 +23,9 @@ const env = {
 const deps = {
   backendFetch: (req) => {
     const u = new URL(req.url);
-    return fetch(BACKEND_URL + u.pathname + u.search, { method: req.method, headers: req.headers, body: req.body, duplex: "half" });
+    const headers = new Headers(req.headers);
+    if (EDGE_SECRET) headers.set("X-DocShield-Edge-Auth", EDGE_SECRET);
+    return fetch(BACKEND_URL + u.pathname + u.search, { method: req.method, headers, body: req.body, duplex: "half" });
   },
   log: () => {},
 };
@@ -65,10 +68,11 @@ test("worker <-> backend contract", { skip: !BACKEND_URL && "BACKEND_URL not set
     assert.match(body.case_id, /^DS-\d{8}-[0-9A-F]{12}$/);
     assert.ok(Array.isArray(body.pipeline) && body.pipeline.some((s) => s.stage === "ocr"));
     assert.ok(["NO_ADVERSE_INDICATORS", "INCOMPLETE_SCREENING", "MANUAL_REVIEW_RECOMMENDED", "ESCALATE_FOR_EXPERT_REVIEW"].includes(body.risk_assessment.verdict));
-    assert.equal(body.persistence.status, "STORED");
+    assert.equal(JSON.parse(res.headers.get("X-DocShield-Persistence")).status, "STORED");
+    const token = res.headers.get("X-DocShield-Session-Token");
 
     const got = await handleRequest(
-      new Request(`${ORIGIN}/api/case/${body.case_id}`, { headers: { "X-Session-Token": body.session_token } }),
+      new Request(`${ORIGIN}/api/case/${body.case_id}`, { headers: { "X-Session-Token": token } }),
       env,
       deps
     );
@@ -76,6 +80,13 @@ test("worker <-> backend contract", { skip: !BACKEND_URL && "BACKEND_URL not set
     const stored = await got.json();
     assert.equal(stored.document_preview_base64, null);
     assert.equal(stored.document_info.raw_text_preview, "");
+  });
+
+  await t.test("backend rejects direct calls without the edge secret", { skip: !EDGE_SECRET && "EDGE_SHARED_SECRET not set" }, async () => {
+    const direct = await fetch(BACKEND_URL + "/api/ready");
+    assert.equal(direct.status, 401);
+    const live = await fetch(BACKEND_URL + "/health");
+    assert.equal(live.status, 200);
   });
 
   await t.test("malformed upload is rejected by the backend with a safe 400", async () => {
