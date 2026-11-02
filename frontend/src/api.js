@@ -5,6 +5,8 @@ export const API_BASE = "";
 // The free backend (0.1 CPU) can take a minute to wake and ~1-2 minutes per screening.
 const ANALYZE_TIMEOUT_MS = 300000;
 const DEFAULT_TIMEOUT_MS = 30000;
+// Hosting platforms cap request bodies (e.g. 4.5 MB on Vercel Functions); set per build.
+const MAX_TOTAL_UPLOAD_BYTES = Math.floor(Number(import.meta.env.VITE_MAX_UPLOAD_TOTAL_MB || 20) * 1048576);
 const READY_TIMEOUT_MS = 95000;
 const REVIEWER_TOKEN_KEY = "docshield_reviewer_token";
 
@@ -114,6 +116,12 @@ export async function analyzeDocument(docFile, personFile = null, docTypeHint = 
   if (docFile.size === 0) throw new Error("The selected document file is empty.");
   if (docFile.size > 10 * 1024 * 1024) throw new Error("The document image exceeds 10 MB.");
   if (personFile && personFile.size > 10 * 1024 * 1024) throw new Error("The person photo exceeds 10 MB.");
+  const total = docFile.size + (personFile ? personFile.size : 0);
+  if (total > MAX_TOTAL_UPLOAD_BYTES) {
+    throw new Error(
+      `This deployment accepts at most ${(MAX_TOTAL_UPLOAD_BYTES / 1048576).toFixed(1)} MB per screening (document + photo). Please use smaller images.`
+    );
+  }
 
   const formData = new FormData();
   formData.append("document", docFile);

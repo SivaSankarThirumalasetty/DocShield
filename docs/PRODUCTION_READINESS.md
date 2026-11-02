@@ -11,8 +11,10 @@ demonstration of an advisory prototype using synthetic samples.
 | B2 | No legal / regulatory review (Aadhaar Act & regulations, DPDP Act 2023, sector rules). Processing Aadhaar images may itself be restricted. | Qualified legal review before any real-data use. |
 | B3 | Model licences unverified for commercial redistribution: dlib 68-point landmark model (iBUG 300-W terms) shipped in `face_recognition_models`; OpenCV res10 SSD weights provenance. No project LICENSE. | Legal/licence review; replace models if needed; choose a licence. |
 | B4 | Reviewer identity is bearer-token only: no SSO, MFA, admin UI, or self-service revocation. | Integrate an identity provider (e.g. Cloudflare Access) for reviewers. |
-| B5 | Single container instance; rate limiting is approximate per location. A distributed flood degrades availability and raises cost. | Add Cloudflare WAF / rate-limiting rules on the zone, a budget alert, and capacity testing. |
-| B6 | Live deployment of this commit not yet performed/verified (see final report). | Configure CI secrets and approve the production environment. |
+| B5 | Single free backend instance (0.1 CPU, one screening at a time, sleeps when idle); Render states free instances are not for production. Rate limiting is approximate per location. | A paid, always-on backend for real use; WAF rules; capacity testing. |
+| B6 | Live deployment not yet performed/verified. | Owner setup in DEPLOYMENT.md (Render account, Cloudflare token, GitHub secrets), then merge. |
+| B7 | Uploaded identity images are processed by a third party (Render, Singapore). | Review Render terms/DPA and data-residency requirements before any real data. |
+| B8 | Free image uses a third-party prebuilt dlib wheel (`dlib-bin`). | Verify provenance or build dlib from source in CI. |
 
 ## Accepted risks (documented)
 
@@ -21,7 +23,7 @@ demonstration of an advisory prototype using synthetic samples.
   needs `pkg_resources`. Ignored explicitly in CI.
 * Python dependencies are version-pinned but not hash-pinned; EasyOCR weights are fetched at
   image build time without checksum verification.
-* `wrangler deploy` is not transactional: new Worker code can briefly talk to the old container.
+* `wrangler deploy` is not transactional, and Render deploys the backend independently on push; for a short window the Worker and backend versions can differ. Both sides tolerate this (header record is optional; missing it means "not stored").
 
 ## Operational readiness
 
@@ -42,22 +44,26 @@ demonstration of an advisory prototype using synthetic samples.
 * Delete obsolete Worker secrets `BACKEND_ORIGIN` and `DOCSHIELD_OFFICER_KEY` if they exist.
 * The Railway service is left intact for recovery, pending owner approval to retire it.
 
-## Cost and resources (Workers Paid, prices as published 2026-10)
+## Cost and resources (₹0 configuration)
 
-`standard-2` = 1 vCPU, 6 GiB memory, 12 GB disk. Memory and disk are billed on provisioned
-size while the instance is awake; CPU on active use.
+| Component | Plan | Cost | Binding limits |
+|---|---|---|---|
+| Cloudflare Worker + static assets | Workers Free | ₹0 | 100k requests/day, 10 ms CPU/request |
+| Cloudflare D1 `docshield-db` | Free | ₹0 | daily row read/write limits (queries fail, not billed) |
+| Backend | Render Free web service | ₹0 | 512 MB, 0.1 CPU, sleeps after 15 min, 750 h/month |
+| CI | GitHub Actions on a public repo | ₹0 | standard hosted-runner limits |
 
-| Item | Rate | Per awake hour |
-|---|---|---|
-| Memory | $0.0000025 / GiB-s (25 GiB-h/month included) | 6 × 3600 × 0.0000025 = **$0.054** |
-| Disk | $0.00000007 / GB-s (200 GB-h/month included) | 12 × 3600 × 0.00000007 = **$0.003** |
-| CPU | $0.000020 / vCPU-s active (375 vCPU-min included) | ≤ $0.072 at 100 % busy |
+No payment method is required by this setup. Keep it that way: on Render, a payment method on file
+enables overage billing; on Cloudflare, Containers/Workers Paid are not used.
 
-* Included memory covers ≈ 4 awake-hours per month; included disk ≈ 16 hours.
-* Each wake keeps the instance up ≥ 15 minutes (`sleepAfter`).
-* Always-on worst case (730 h): ≈ $39 memory + $2 disk + CPU usage + $5 plan ≈ **$46+/month**.
-* A light demo (e.g. 20 wakes/day × 15 min ≈ 150 h/month): ≈ $8 memory + small CPU/disk + $5.
-* D1 and Workers requests at demo volumes fall within included usage.
+Measured in CI (`free-image` job, commit a927482, container limited to 512 MB / 0.1 CPU):
 
-Measured memory and latency figures come from the CI container job (see TEST_REPORT.md);
-production cold-start time must be measured after the first live deploy.
+| Metric | Value |
+|---|---|
+| Cold start to `/ready` 200 | 20 s (Render adds ~1 min wake when sleeping) |
+| Screening latency (synthetic samples, with person photo) | 20.6 s, 20.7 s, 27.2 s |
+| Peak memory | 258 MiB of 512 MiB, no OOM |
+| Image size | 763 MB |
+
+The paid alternative (`wrangler.containers.jsonc`, standard-2) would cost roughly $0.054/awake-hour
+in memory beyond the included allowance plus the $5/month plan; it is not used.

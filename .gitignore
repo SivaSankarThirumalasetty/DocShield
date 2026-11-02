@@ -62,3 +62,7 @@ backend/data/*.db*
 uploads/
 backend/tests/evaluation_report.json
 backend/tests/performance_report.json
+backend/tessdata/
+public/
+DEPLOY_SHA
+.vercel/

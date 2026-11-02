@@ -40,8 +40,20 @@ aadhaar_invalid_checksum MANUAL_REVIEW_RECOMMENDED MEDIUM 30 unavailable=['ocr']
 Before the fix in this change, the same request produced `ESCALATE_FOR_EXPERT_REVIEW / HIGH / 65`
 because an empty OCR result was scored as an Aadhaar checksum failure (finding C4).
 
+## CI evidence (GitHub Actions, public annotations)
+
+| Commit | Job | Result |
+|---|---|---|
+| 29fe048 | Full image (`backend/Dockerfile`, EasyOCR+PyTorch) | built; `/ready` 200; real screening of all 3 samples passed (OCR completed, invalid checksum detected) |
+| a927482 | **Free image under 512 MB / 0.1 CPU** | `/ready` 200 after 20 s; direct call without edge secret → 401; screenings 20.6 / 20.7 / 27.2 s, all 8 stages COMPLETED, no unavailable signals, invalid checksum detected; peak 258 MiB; no OOM |
+| a927482 | Frontend, Worker tests, wrangler dry-runs (free + containers config) | passed |
+| a927482 | Backend tests (Linux + Tesseract), in-image tests | **failed**: `sanitize_filename` kept `....windowswin.ini` for Windows-style traversal on Linux. Fixed in 7707b97. |
+| a927482 | gitleaks | **failed**: placeholder `DOCSHIELD_OFFICER_KEY=replace-with-…` in old commit 72f75745; reviewed, fingerprint-allowlisted in 7707b97 |
+
+Note: the synthetic cartoon faces were reported as `MATCH`. That shows the pipeline runs; it says
+nothing about face-comparison accuracy.
+
 ## Not yet verified
 
-* Full pipeline in the production image (CI `container` job) — pending first CI run.
-* Live deployment, cold-start latency, production memory, concurrent load — pending deploy.
+* Live deployment on Render + Cloudflare, real Render wake time, concurrent load — pending owner setup.
 * Accuracy of any kind — see PRODUCT_LIMITATIONS.md. Unit tests passing says nothing about accuracy.

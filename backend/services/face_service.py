@@ -24,12 +24,52 @@ def resolve_weights_dir() -> Path:
 
 WEIGHTS_DIR = resolve_weights_dir()
 
+class _DlibFaceEmbedder:
+    """Minimal stand-in for the face_recognition API used below.
+
+    Uses the same dlib models (5-point landmarks + ResNet descriptor shipped in
+    face_recognition_models) and the same Euclidean distance, so results match
+    face_recognition.face_encodings(..., model="small", num_jitters=1). Used where
+    face_recognition itself cannot be installed alongside a prebuilt dlib wheel.
+    """
+
+    def __init__(self):
+        import dlib
+        import face_recognition_models as frm
+        self._dlib = dlib
+        self._detector = dlib.get_frontal_face_detector()
+        self._pose = dlib.shape_predictor(frm.pose_predictor_five_point_model_location())
+        self._encoder = dlib.face_recognition_model_v1(frm.face_recognition_model_location())
+
+    def face_encodings(self, rgb_image, known_face_locations=None):
+        if known_face_locations is None:
+            rects = self._detector(rgb_image, 1)
+        else:
+            rects = [self._dlib.rectangle(left, top, right, bottom)
+                     for (top, right, bottom, left) in known_face_locations]
+        return [
+            np.array(self._encoder.compute_face_descriptor(rgb_image, self._pose(rgb_image, r), 1))
+            for r in rects
+        ]
+
+    @staticmethod
+    def face_distance(known_encodings, candidate):
+        if len(known_encodings) == 0:
+            return np.empty(0)
+        return np.linalg.norm(np.asarray(known_encodings) - candidate, axis=1)
+
+
 try:
     import face_recognition
     FACE_REC_AVAILABLE = True
 except ImportError:
-    FACE_REC_AVAILABLE = False
-    logger.warning("Biometric face_recognition package is not installed.")
+    try:
+        face_recognition = _DlibFaceEmbedder()
+        FACE_REC_AVAILABLE = True
+        logger.info("face_recognition not installed; using direct dlib embedder (same models).")
+    except Exception as _e:
+        FACE_REC_AVAILABLE = False
+        logger.warning(f"Face embedding unavailable: {type(_e).__name__}")
 
 MIN_FACE_DIMENSION = 45  # Pixels: faces below 45x45 are too small for reliable biometric embedding
 

@@ -11,6 +11,14 @@ try:
 except ImportError:
     PYTESSERACT_AVAILABLE = False
 
+# Same Tesseract engine via its C library (wheel bundles libtesseract). Used where no
+# `tesseract` executable can be installed, e.g. serverless Python runtimes.
+try:
+    import tesserocr
+    TESSEROCR_AVAILABLE = True
+except ImportError:
+    TESSEROCR_AVAILABLE = False
+
 try:
     import easyocr
     EASYOCR_AVAILABLE = True
@@ -28,14 +36,47 @@ COMMON_TESSERACT_PATHS = [
     "/bin/tesseract",
 ]
 
+OCR_UPSCALE = 2
+OCR_UPSCALE_BELOW_PX = 1700  # documents are resized to <= 1600 px before OCR
+
+
+def resolve_tessdata_dir() -> Optional[str]:
+    for candidate in [
+        os.environ.get("TESSDATA_PREFIX"),
+        str(Path(__file__).resolve().parent.parent / "tessdata"),
+    ]:
+        if candidate and (Path(candidate) / "eng.traineddata").exists():
+            return candidate
+    return None
+
+
 class OCRService:
     def __init__(self):
         self.tesseract_configured = False
+        # "cli" (pytesseract + tesseract binary) or "library" (tesserocr + libtesseract)
+        self.tesseract_mode: Optional[str] = None
+        self.tessdata_dir: Optional[str] = None
         self.easyocr_reader = None
         self.easyocr_error: Optional[str] = None
         self._check_tesseract()
 
     def _check_tesseract(self):
+        self._check_tesseract_cli()
+        if self.tesseract_configured:
+            self.tesseract_mode = "cli"
+            return
+        if TESSEROCR_AVAILABLE:
+            self.tessdata_dir = resolve_tessdata_dir()
+            if self.tessdata_dir:
+                try:
+                    with tesserocr.PyTessBaseAPI(path=self.tessdata_dir, lang="eng"):
+                        pass
+                    self.tesseract_configured = True
+                    self.tesseract_mode = "library"
+                except Exception as e:
+                    logger.warning(f"tesserocr could not initialise: {type(e).__name__}")
+
+    def _check_tesseract_cli(self):
         if not PYTESSERACT_AVAILABLE:
             return
         env_cmd = os.environ.get("TESSERACT_CMD")
@@ -68,6 +109,7 @@ class OCRService:
     def status(self) -> Dict[str, Any]:
         return {
             "tesseract": self.tesseract_configured,
+            "tesseract_mode": self.tesseract_mode,
             "easyocr_installed": EASYOCR_AVAILABLE,
             "easyocr_loaded": self.easyocr_reader is not None,
         }
@@ -101,6 +143,58 @@ class OCRService:
                 logger.warning(f"Could not initialize EasyOCR reader: {e}")
         return self.easyocr_reader
 
+    def _tesseract_words(self, pil_image: Image.Image):
+        """Runs Tesseract (CLI or library) and returns (text, words, confidences)."""
+        # Tesseract is unreliable when glyphs are only ~10-15 px tall, which is typical of
+        # small scans and phone screenshots. Upscale small images for OCR only (other
+        # stages keep the original pixels) and map word boxes back to original coordinates.
+        scale = OCR_UPSCALE if max(pil_image.size) < OCR_UPSCALE_BELOW_PX else 1
+        if scale != 1:
+            pil_image = pil_image.resize(
+                (pil_image.width * scale, pil_image.height * scale), Image.Resampling.BICUBIC
+            )
+        text, words, confidences = self._tesseract_words_raw(pil_image)
+        if scale != 1:
+            for w in words:
+                w["bbox"] = [int(v / scale) for v in w["bbox"]]
+        return text, words, confidences
+
+    def _tesseract_words_raw(self, pil_image: Image.Image):
+        words: List[Dict[str, Any]] = []
+        confidences: List[float] = []
+        if self.tesseract_mode == "library":
+            with tesserocr.PyTessBaseAPI(path=self.tessdata_dir, lang="eng") as api:
+                api.SetImage(pil_image.convert("RGB"))
+                text = api.GetUTF8Text()
+                it = api.GetIterator()
+                level = tesserocr.RIL.WORD
+                if it is not None:
+                    while True:
+                        txt = (it.GetUTF8Text(level) or "").strip()
+                        conf = float(it.Confidence(level))
+                        box = it.BoundingBox(level)
+                        if txt and conf > 0 and box:
+                            x1, y1, x2, y2 = box
+                            words.append({"text": txt, "confidence": conf, "bbox": [x1, y1, x2 - x1, y2 - y1]})
+                            confidences.append(conf)
+                        if not it.Next(level):
+                            break
+            return text, words, confidences
+
+        data = pytesseract.image_to_data(pil_image, output_type=pytesseract.Output.DICT)
+        text = pytesseract.image_to_string(pil_image)
+        for i in range(len(data.get("text", []))):
+            txt = data["text"][i].strip()
+            conf = float(data["conf"][i])
+            if txt and conf > 0:
+                words.append({
+                    "text": txt,
+                    "confidence": conf,
+                    "bbox": [data["left"][i], data["top"][i], data["width"][i], data["height"][i]]
+                })
+                confidences.append(conf)
+        return text, words, confidences
+
     def extract_text(self, pil_image: Image.Image) -> Dict[str, Any]:
         """
         Extracts raw text, line tokens, and bounding boxes.
@@ -112,22 +206,9 @@ class OCRService:
         confidences = []
 
         # 1. Try Tesseract first
-        if self.tesseract_configured and PYTESSERACT_AVAILABLE:
+        if self.tesseract_configured:
             try:
-                data = pytesseract.image_to_data(pil_image, output_type=pytesseract.Output.DICT)
-                tess_text = pytesseract.image_to_string(pil_image)
-                n_boxes = len(data.get("text", []))
-                for i in range(n_boxes):
-                    txt = data["text"][i].strip()
-                    conf = float(data["conf"][i])
-                    if txt and conf > 0:
-                        words.append({
-                            "text": txt,
-                            "confidence": conf,
-                            "bbox": [data["left"][i], data["top"][i], data["width"][i], data["height"][i]]
-                        })
-                        confidences.append(conf)
-
+                tess_text, words, confidences = self._tesseract_words(pil_image)
                 raw_text = tess_text.strip()
                 mean_conf = round(float(np.mean(confidences)), 1) if confidences else 0.0
 
