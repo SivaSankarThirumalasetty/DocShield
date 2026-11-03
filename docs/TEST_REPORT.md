@@ -53,7 +53,24 @@ because an empty OCR result was scored as an Aadhaar checksum failure (finding C
 Note: the synthetic cartoon faces were reported as `MATCH`. That shows the pipeline runs; it says
 nothing about face-comparison accuracy.
 
+## Live verification — https://docshield-ss-ec9e.vercel.app (commit bbb3d79, 2026-11-03)
+
+| Check | Result |
+|---|---|
+| `GET /` | 200 text/html (UI) |
+| `GET /api/ready` | 200 `ready`; ocr_tesseract, face_detector, face_embedding, demo_registry = true; ocr_easyocr = false |
+| `GET /api/nope`, `/assets/missing.js` | 404 JSON (never the HTML page) |
+| `POST /api/analyze-document` (curl, 3 samples + person photo) | 200 each, ~1.3 s, ~85 KB |
+| Malformed upload | 400 "Invalid file format…" |
+| **Browser**: status pill | "Engine ready" from a real `/api/ready` request (127 ms) |
+| **Browser**: Tampered-checksum preset → Run Screening | real `POST /api/analyze-document` (1.27 s); UI showed case DS-20261103-0B6896385368, 8/8 stages COMPLETED, checksum 2/3, "Manual review recommended", score 35, "Case record: not stored", advisory notice |
+| **Browser**: Valid Aadhaar preset → Run Screening | case DS-20261103-04A38BD85594, checksum 3/3, "No adverse indicators", score 0, 816 ms |
+| Browser console | no errors |
+
+Known OCR limitation: the synthetic passport's number `Z2098451` is read as `22098451`, so that
+sample is routed to manual review (also the case with the Debian Tesseract CLI in CI).
+
 ## Not yet verified
 
-* Live deployment on Render + Cloudflare, real Render wake time, concurrent load — pending owner setup.
+* Cloudflare Worker + D1 / Render path live; concurrent load on Vercel.
 * Accuracy of any kind — see PRODUCT_LIMITATIONS.md. Unit tests passing says nothing about accuracy.

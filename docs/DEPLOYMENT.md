@@ -1,5 +1,32 @@
 # Deployment (₹0 / free tiers)
 
+## Live now: Vercel Hobby (free) — single app
+
+**https://docshield-ss-ec9e.vercel.app** — Vercel project `docshield` (`prj_Kg2lpIVHR2aRSTQw7HUjBN0WfV86`),
+region `sin1`, Hobby plan (no payment method). One FastAPI function serves both the UI
+(`webui/`, mounted after all API routes) and `/api/*`.
+
+| Item | Detail |
+|---|---|
+| Entrypoint | `app.py` → `backend.main:app`; deps in root `requirements.txt` (Python 3.12) |
+| OCR | Tesseract 5.5 as a library (`tesserocr`), `tessdata_fast` eng model fetched at build (SHA-256 pinned) |
+| Faces | OpenCV SSD detector + dlib 128-d embeddings (prebuilt `dlib-bin`, direct embedder) |
+| Not available | EasyOCR/PyTorch (bundle size); case storage, reviewer sign-in and case history (no D1 without the Cloudflare Worker) — the UI says "not stored" |
+| Limits | 4.5 MB request body (UI enforces 4.3 MB total), 60 s per request, Hobby usage quotas; Hobby is for non-commercial use |
+| Env (project settings) | `DOCSHIELD_ENV=production`, `PERSISTENCE_MODE=none`, `READY_REQUIRES=ocr_tesseract,face_detector,face_embedding,demo_registry`, `MAX_UPLOAD_SIZE_BYTES=4508876`, rate/concurrency limits |
+| Protection | Production domain public; per-deployment and preview URLs require Vercel login |
+
+**Redeploy** (any pushed commit): with the Vercel CLI from the repo root, `npx vercel deploy --prod`
+(the build script uses the local checkout); or upload the bootstrap files (`app.py`, `requirements.txt`,
+`vercel.json`, `.python-version`, `scripts/vercel-build.sh`) plus a `DEPLOY_SHA` file containing the commit —
+the build then fetches exactly that commit from GitHub. **Rollback:** Vercel dashboard → Deployments →
+promote an earlier deployment.
+
+## Alternative: Cloudflare Worker (free) + Render (free)
+
+The sections below describe the Cloudflare-fronted setup (D1 case storage, reviewer tokens). It needs
+the owner actions listed under *One-time setup*; it is implemented and tested in CI but not live.
+
 ```
 Browser → Cloudflare Worker "docshield" (Workers Free) → static UI, /api routing, D1 (free)
                      └── HTTPS + X-DocShield-Edge-Auth ──→ Render free web service (Docker)

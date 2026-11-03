@@ -11,7 +11,7 @@ lookup against a **simulated** demo registry, then explains the combined advisor
 > A qualified human reviewer makes every decision. See
 > [docs/PRODUCT_LIMITATIONS.md](docs/PRODUCT_LIMITATIONS.md).
 
-Live: https://docshield.sivasankar-t1606.workers.dev — runs entirely on free tiers (Cloudflare Workers Free + D1, backend on a Render free web service). See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the limits this implies (slow, sleeps when idle, Tesseract-only OCR).
+Live: **https://docshield-ss-ec9e.vercel.app** (Vercel Hobby, free; screening works, cases are not stored). The Cloudflare Worker + D1 setup (`docshield.sivasankar-t1606.workers.dev`) is implemented but not yet deployed. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Architecture
 
