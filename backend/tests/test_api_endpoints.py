@@ -10,8 +10,8 @@ def test_liveness_health_endpoint():
     res = client.get("/health")
     assert res.status_code == 200
     data = res.json()
-    assert data["status"] == "healthy"
-    assert data["version"] == "2.0.0"
+    assert data["status"] == "alive"
+    assert data["version"] == "2.1.0"
 
 def test_readiness_endpoint():
     res = client.get("/ready")
@@ -25,8 +25,10 @@ def test_api_health_backward_compatibility():
     res = client.get("/api/health")
     assert res.status_code == 200
     data = res.json()
-    assert data["status"] == "healthy"
-    assert "modules" in data
+    assert data["status"] in ("healthy", "degraded")
+    # Module states are computed, not hard-coded to True.
+    assert set(data["modules"]) >= {"ocr_tesseract", "face_detector", "demo_registry", "database"}
+    assert data["modules"]["demo_registry"] is True
 
 def test_debug_endpoint_disabled_by_default():
     res = client.get("/api/debug")

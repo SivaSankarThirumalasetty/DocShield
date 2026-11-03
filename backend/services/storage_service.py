@@ -1,5 +1,6 @@
+import hmac
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
 from sqlalchemy import create_engine, select, desc
@@ -7,7 +8,8 @@ from sqlalchemy.orm import sessionmaker, scoped_session
 
 from ..core.config import settings
 from ..core.logging import logger
-from ..core.security import mask_aadhaar_number, hash_token
+from ..core.security import hash_token
+from ..core.redaction import redact_result_for_storage
 from ..models.db_models import Base, CaseModel, AuditLogModel
 from ..models.schemas import ScreeningResult, CaseSummary, OfficerReview
 
@@ -55,13 +57,9 @@ class StorageService:
     def save_case(self, case: ScreeningResult, session_token_hash: Optional[str] = None) -> bool:
         session = self.Session()
         try:
-            doc_num_masked = mask_aadhaar_number(case.document_info.document_number)
-            
-            # Prepare payload for storage: scrub full-resolution raw previews if persistent storage is disabled
-            payload_dict = case.model_dump()
-            if not settings.enable_source_image_storage:
-                payload_dict["document_preview_base64"] = None
-                payload_dict["person_preview_base64"] = None
+            # Persist only the minimised record: no images, OCR text, names or full numbers.
+            payload_dict = redact_result_for_storage(case.model_dump())
+            doc_num_masked = payload_dict["document_info"].get("document_number")
             payload_json = json.dumps(payload_dict)
 
             record = CaseModel(
@@ -71,7 +69,7 @@ class StorageService:
                 session_token_hash=session_token_hash,
                 document_type=case.document_info.document_type,
                 document_number_masked=doc_num_masked,
-                person_name=case.document_info.name,
+                person_name=None,
                 risk_score=case.risk_assessment.score,
                 risk_level=case.risk_assessment.level,
                 verdict=case.risk_assessment.verdict,
@@ -145,7 +143,7 @@ class StorageService:
                 if not session_token or not record.session_token_hash:
                     return None, "FORBIDDEN"
                 provided_hash = hash_token(session_token)
-                if provided_hash != record.session_token_hash:
+                if not hmac.compare_digest(provided_hash, record.session_token_hash):
                     return None, "FORBIDDEN"
 
             data = json.loads(record.payload_json)
@@ -178,7 +176,7 @@ class StorageService:
                 case_id=case_id,
                 action="OFFICER_REVIEW_SUBMITTED",
                 actor=review.officer_id or "OFFICER",
-                details=f"Decision: {review.decision}, Notes: {review.notes}"
+                details=f"Decision: {review.decision}"
             )
             session.add(audit)
             session.commit()
@@ -188,6 +186,22 @@ class StorageService:
             session.rollback()
             logger.error(f"Failed to update officer review for {case_id}: {e}")
             return None
+        finally:
+            session.close()
+
+    def purge_expired(self, retention_hours: Optional[int] = None) -> int:
+        """Deletes case records older than the retention window. Returns rows deleted."""
+        hours = retention_hours if retention_hours is not None else settings.data_retention_hours
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        session = self.Session()
+        try:
+            deleted = session.query(CaseModel).filter(CaseModel.created_at < cutoff).delete()
+            session.commit()
+            return deleted
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Retention purge failed: {type(e).__name__}")
+            return 0
         finally:
             session.close()
 
@@ -215,5 +229,8 @@ class StorageService:
         finally:
             session.close()
 
-# Global Singleton
-storage_service = StorageService()
+# Global singleton. In PERSISTENCE_MODE=none (Cloudflare container) the backend is
+# stateless: the Worker persists redacted records in D1, so no local DB is created.
+storage_service: Optional[StorageService] = (
+    StorageService() if settings.persistence_mode == "sqlite" else None
+)

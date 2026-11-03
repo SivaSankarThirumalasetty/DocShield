@@ -18,11 +18,27 @@ class InMemoryRateLimiter:
         self._requests: Dict[str, list] = {}
         self._lock = asyncio.Lock()
 
+    @staticmethod
+    def _extract_client_ip(request: Request) -> str:
+        cf_ip = request.headers.get("cf-connecting-ip")
+        if cf_ip:
+            return cf_ip.strip()
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"
+
     async def check_rate_limit(self, request: Request, max_requests: int = 10, window_seconds: int = 60):
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = self._extract_client_ip(request)
         now = time.time()
         
         async with self._lock:
+            # Bound memory: drop idle clients once the table grows large.
+            if len(self._requests) > 10_000:
+                self._requests = {
+                    ip: ts for ip, ts in self._requests.items()
+                    if ts and now - ts[-1] < window_seconds
+                }
             # Clean expired timestamps
             if client_ip in self._requests:
                 self._requests[client_ip] = [

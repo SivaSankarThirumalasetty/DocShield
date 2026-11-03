@@ -10,45 +10,67 @@ import {
   RotateCw, 
   Eye 
 } from "lucide-react";
-import { listCases, getCase, getOfficerKey, setOfficerKey } from "../api";
+import { listCases, getCase, getReviewerToken, setReviewerToken, getReviewerProfile } from "../api";
 
 export default function CaseHistoryPage({ currentResult, onSelectCase }) {
-  const [officerKeyInput, setOfficerKeyInput] = useState(getOfficerKey());
+  const [officerKeyInput, setOfficerKeyInput] = useState(getReviewerToken());
+  const [reviewer, setReviewer] = useState(null);
   const [cases, setCases] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => Boolean(getReviewerToken()));
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 5;
 
-  useEffect(() => {
-    if (getOfficerKey()) {
-      fetchCases();
-    }
-  }, []);
-
   const fetchCases = async () => {
     setLoading(true);
     setError(null);
     try {
+      const profile = await getReviewerProfile();
+      setReviewer(profile);
       const data = await listCases();
       setCases(data);
     } catch (err) {
-      setError(err.message || "Failed to load case dockets.");
+      setError(err.message || "Failed to load cases.");
+      setReviewer(null);
       setCases([]);
     } finally {
       setLoading(false);
     }
   };
 
+  // Restore a signed-in reviewer session on mount (token kept in sessionStorage).
+  useEffect(() => {
+    if (!getReviewerToken()) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const profile = await getReviewerProfile();
+        const data = await listCases();
+        if (!cancelled) {
+          setReviewer(profile);
+          setCases(data);
+        }
+      } catch (err) {
+        if (!cancelled) setError(err.message || "Failed to load cases.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const handleSaveKey = (e) => {
     e.preventDefault();
-    setOfficerKey(officerKeyInput.trim());
+    setReviewerToken(officerKeyInput.trim());
     fetchCases();
   };
 
   const handleClearKey = () => {
-    setOfficerKey("");
+    setReviewerToken("");
+    setReviewer(null);
     setOfficerKeyInput("");
     setCases([]);
     setError(null);
@@ -83,9 +105,9 @@ export default function CaseHistoryPage({ currentResult, onSelectCase }) {
     <div className="history-container">
       <div className="page-header">
         <div>
-          <h1 className="page-title">Authorized Case Docket History</h1>
+          <h1 className="page-title">Case History (Reviewers)</h1>
           <p className="page-subtitle">
-            Browse and inspect previous multi-layer document screening records and officer review sign-offs.
+            Redacted records of recent screenings in your tenant, kept for the configured retention period.
           </p>
         </div>
       </div>
@@ -95,9 +117,9 @@ export default function CaseHistoryPage({ currentResult, onSelectCase }) {
         <div className="auth-card-header">
           <Key size={18} className="auth-icon" />
           <div>
-            <h3 className="auth-title">Officer Key Authorization Required</h3>
+            <h3 className="auth-title">Reviewer sign-in</h3>
             <p className="auth-subtitle">
-              Screening dockets are protected under privacy isolation controls. Enter your authorized Officer Key to access the case log.
+              Enter the personal reviewer token issued by your administrator. It is kept only for this browser tab.
             </p>
           </div>
         </div>
@@ -106,30 +128,32 @@ export default function CaseHistoryPage({ currentResult, onSelectCase }) {
           <input
             type="password"
             className="form-input auth-input"
-            placeholder="Enter X-Officer-Key (e.g., dev-officer-key-409)"
+            placeholder="Reviewer access token"
+            autoComplete="off"
             value={officerKeyInput}
             onChange={(e) => setOfficerKeyInput(e.target.value)}
           />
           <button type="submit" className="btn-primary" disabled={loading || !officerKeyInput.trim()}>
-            Authorize Access
+            Sign in
           </button>
-          {getOfficerKey() && (
+          {getReviewerToken() && (
             <button type="button" className="btn-action-outline" onClick={handleClearKey}>
-              Clear Key
+              Sign out
             </button>
           )}
         </form>
       </div>
 
       {/* Active Session Fallback if not officer authorized */}
-      {!getOfficerKey() && currentResult && (
+      {!reviewer && currentResult && (
+
         <div className="active-session-card">
           <div className="session-card-header">
             <ShieldCheck size={20} className="text-green" />
             <div>
-              <h4 className="session-title">Current Session Docket Available</h4>
+              <h4 className="session-title">Your current screening result</h4>
               <p className="session-subtitle">
-                You have an active screening result in this browser session: Docket <strong>{currentResult.case_id}</strong>
+                You have a screening result from this browser session: case <strong>{currentResult.case_id}</strong>
               </p>
             </div>
           </div>
@@ -138,7 +162,7 @@ export default function CaseHistoryPage({ currentResult, onSelectCase }) {
             className="btn-action-outline"
             onClick={() => onSelectCase(currentResult)}
           >
-            <span>View Active Docket in Results</span>
+            <span>View result</span>
             <ArrowRight size={14} />
           </button>
         </div>
@@ -153,8 +177,9 @@ export default function CaseHistoryPage({ currentResult, onSelectCase }) {
       )}
 
       {/* Case List if Authorized */}
-      {getOfficerKey() && (
+      {reviewer && (
         <div className="section-card">
+          <p className="page-subtitle">Signed in as {reviewer.display_name} ({reviewer.officer_id}), tenant {reviewer.tenant_id}.</p>
           <div className="table-controls-bar">
             <div className="search-box">
               <Search size={16} />
@@ -215,7 +240,7 @@ export default function CaseHistoryPage({ currentResult, onSelectCase }) {
                       </td>
                       <td className="bold">{c.verdict?.replace(/_/g, " ")}</td>
                       <td>
-                        {c.officer_review?.reviewed ? (
+                        {c.officer_decision || c.officer_review?.reviewed ? (
                           <span className="status-badge pass">
                             <CheckCircle size={12} /> Signed
                           </span>

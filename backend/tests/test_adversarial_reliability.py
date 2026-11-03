@@ -39,8 +39,8 @@ def test_persistence_across_cold_restart(tmp_path):
         watchlist=WatchlistHit(is_flagged=False, status="CLEARED"),
         tampering=TamperAnalysisResult(ela_score=12.0),
         face_verification=FaceVerificationResult(similarity_score=92.0, match_verdict="MATCH"),
-        risk_assessment=RiskAssessment(score=10, level="LOW", verdict="CLEARED"),
-        officer_review=OfficerReview(reviewed=True, officer_name="Commander Sharma", decision="CLEARED_FOR_ENTRY")
+        risk_assessment=RiskAssessment(score=10, level="LOW", verdict="NO_ADVERSE_INDICATORS"),
+        officer_review=OfficerReview(reviewed=True, officer_name="Commander Sharma", decision="CONCUR_NO_FURTHER_ACTION")
     )
     
     from backend.core.security import generate_session_token
@@ -59,7 +59,9 @@ def test_persistence_across_cold_restart(tmp_path):
     assert auth_status is None
     assert retrieved is not None
     assert retrieved.case_id == "DOC-RESTART-001"
-    assert retrieved.document_info.document_number == "Z1234567"
+    # Stored records are minimised: number masked, name removed.
+    assert retrieved.document_info.document_number == "****4567"
+    assert retrieved.document_info.name is None
     assert retrieved.officer_review.reviewed is True
     assert retrieved.officer_review.officer_name == "Commander Sharma"
 
@@ -108,7 +110,7 @@ def test_risk_engine_handles_total_service_failure():
 
     assert isinstance(risk, RiskAssessment)
     assert risk.score >= 50, f"Expected elevated risk score on total degradation, got {risk.score}"
-    assert risk.verdict in ("SECONDARY_INSPECTION", "DETENTION_ALERT")
+    assert risk.verdict in ("INCOMPLETE_SCREENING", "MANUAL_REVIEW_RECOMMENDED", "ESCALATE_FOR_EXPERT_REVIEW")
     assert len(risk.reasons) > 0
     # Unavailable signals must not be converted to CLEAR
-    assert "UNAVAILABLE" in risk.reasons[0] or any("UNAVAILABLE" in r or "Indeterminate" in r for r in risk.reasons)
+    assert "demo_registry" in risk.unavailable_signals

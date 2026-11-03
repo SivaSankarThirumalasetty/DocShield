@@ -105,7 +105,7 @@ def test_path_traversal_sanitization(malicious_filename, expected_safe):
 # =========================================================================
 
 def test_unauthorized_case_access_blocked():
-    """Verifies that accessing a case without a matching session token or officer key returns HTTP 403."""
+    """Verifies that accessing a case without a matching session token or officer key returns HTTP 404 (no enumeration signal)."""
     doc_bytes = create_valid_test_image(300, 200)
     res = client.post(
         "/api/analyze-document",
@@ -117,14 +117,14 @@ def test_unauthorized_case_access_blocked():
 
     # 1. Attempt access without any headers
     anon_res = client.get(f"/api/case/{case_id}")
-    assert anon_res.status_code == 403
+    assert anon_res.status_code == 404
 
     # 2. Attempt access with an invalid session token
     tampered_res = client.get(
         f"/api/case/{case_id}",
         headers={"X-Session-Token": "tampered-token-1234567890abcdef"}
     )
-    assert tampered_res.status_code == 403
+    assert tampered_res.status_code == 404
 
     # 3. Authorized access with legitimate session token
     auth_res = client.get(
@@ -151,7 +151,7 @@ def test_officer_list_and_review_strictly_require_key():
     # Submit review
     assert client.post(
         "/api/case/DOC-FAKE-123/review",
-        json={"officer_id": "OFC", "officer_name": "Name", "decision": "CLEARED_FOR_ENTRY"}
+        json={"officer_id": "OFC", "officer_name": "Name", "decision": "CONCUR_NO_FURTHER_ACTION"}
     ).status_code == 401
 
 # =========================================================================

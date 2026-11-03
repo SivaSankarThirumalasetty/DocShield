@@ -1,149 +1,99 @@
----
-title: DocShield
-emoji: 🛡️
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 7860
-pinned: false
----
+# DocShield
 
-# DocShield: AI-Based Fake Identity & Document Screening System
-**Smart India Hackathon 2026** | **Problem Statement:** SIH26188  
-**Organization:** Ministry of Home Affairs (MHA) | **Department:** Sashastra Seema Bal (SSB)
+AI-assisted identity-document **screening prototype**. It extracts text from a document
+image, runs format/checksum checks (Aadhaar Verhoeff, passport MRZ), a heuristic
+image-forensics check (ELA), optional face comparison against a person photo, and a
+lookup against a **simulated** demo registry, then explains the combined advisory result.
 
-DocShield is a standalone, AI-powered identity and travel document screening system tailored for border security checkposts, immigration checkpoints, and law enforcement agencies.
+> **Prototype / advisory only.** DocShield is not a government verification service. It
+> performs no real registry, police or watchlist lookup. ELA is not proof of forgery, face
+> similarity is not a probability of identity, and the score is an uncalibrated heuristic.
+> A qualified human reviewer makes every decision. See
+> [docs/PRODUCT_LIMITATIONS.md](docs/PRODUCT_LIMITATIONS.md).
 
----
+Live: **https://docshield.sivasankar-t1606.workers.dev** — Cloudflare Workers Free (UI, API routing, D1 case storage) in front of the FastAPI backend on Vercel Hobby (free). ₹0 hosting. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-## Target Workflow
+## Architecture
 
-`
-Document Image + Person Live Photo
-               │
-               ▼
-   [ Document Preprocessing ]  (Deskewing, Binarization, Contrast Tuning)
-               │
-               ▼
-   [ Document Classification ]  (Aadhaar, Passport, PAN, Voter ID)
-               │
-               ▼
-       [ OCR Text Extraction ]  (Character & Word Bounding Boxes)
-               │
-               ▼
-   [ Structured Field Parsing ] (ID No., Name, DOB, Gender, Expiry, MRZ)
-               │
-               ▼
-    [ Validation & Checksums ]  (Verhoeff 12-digit algorithm, Regex formats, Dates)
-               │
-               ▼
-   [ Mock SSB Registry Check ]  (Look-out circulars, Stolen/Lost database, Impersonators)
-               │
-               ▼
-   [ Tamper Analysis (ELA) ]    (Error Level Analysis, Compression Discrepancy Heatmap)
-               │
-               ▼
-    [ Face Verification 1:1 ]   (OpenCV DNN Caffe SSD + 128-d Face Embedding Distance)
-               │
-               ▼
-     [ Multi-Factor Risk ]      (0 - 100 Risk Score: LOW / MEDIUM / HIGH)
-               │
-               ▼
-   [ Explainable Reasons ]      (Human-readable forensic audit reasons)
-               │
-               ▼
-    [ Officer Web Dashboard ]   (Dual-panel intake & forensic dossier display)
-`
+Browser → Cloudflare Worker (static React app + `/api/*`, D1 for redacted case records, reviewer
+tokens and audit log) → FastAPI backend (Tesseract, OpenCV, dlib) on a Render free web service,
+called with a shared edge secret. An optional paid mode runs the full image (incl. EasyOCR/PyTorch)
+on Cloudflare Containers (`wrangler.containers.jsonc`).
+Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
----
+```
+frontend/   React + Vite UI
+worker/     Cloudflare Worker (routing, auth, rate limits, D1) + tests
+backend/    FastAPI screening pipeline, Dockerfile, tests
+migrations/ D1 schema
+scripts/    create-officer-token.mjs (reviewer credentials)
+sample_data synthetic test images only
+```
 
-## Directory Structure
+## Local development
 
-`
-DocShield/
-├── backend/
-│   ├── main.py                     # FastAPI application entrypoint & routing
-│   ├── requirements.txt            # Python dependencies
-│   ├── services/
-│   │   ├── ocr_service.py          # Optical character recognition & bounding boxes
-│   │   ├── document_parser.py      # Document classification & entity parsing
-│   │   ├── validation_service.py   # Checksums (Verhoeff for Aadhaar), format regex, dates
-│   │   ├── tampering_service.py    # In-memory Error Level Analysis (ELA) & heatmap
-│   │   ├── face_service.py         # OpenCV DNN SSD face detector & biometric matching
-│   │   ├── risk_engine.py          # Multi-signal weighted risk score & explainability
-│   │   ├── mock_database.py        # Simulated SSB registry, stolen ID, and watchlist lookups
-│   │   └── report_service.py       # Case persistence & audit history
-│   ├── models/
-│   │   └── schemas.py              # Pydantic data schemas for requests & responses
-│   ├── utils/
-│   │   └── image_utils.py          # Image loading, deskewing, base64 encoding
-│   ├── data/
-│   │   └── mock_database.json      # Mock database records
-│   └── models_weights/             # Pre-trained OpenCV Caffe SSD weights
-│       ├── deploy.prototxt
-│       └── res10_300x300_ssd_iter_140000_fp16.caffemodel
-│
-├── frontend/                       # Modern React + Vite Officer Screening Dashboard
-│   ├── src/
-│   │   ├── App.jsx                 # Screening station & forensic dossier interface
-│   │   ├── api.js                  # Client communicating with FastAPI endpoints
-│   │   └── index.css               # Border security dark UI theme
-│   ├── package.json
-│   └── vite.config.js              # Configured with proxy to backend
-│
-├── sample_data/                    # Sample scenarios for demo and testing
-├── reports/                        # Target directory for generated inspection dockets
-├── source_references/              # Attributions & reference mappings
-├── run_local.bat                   # Single-click launcher for Windows
-└── README.md
-`
+Prerequisites: Python 3.11, Node 22.5+, optionally Tesseract (without it OCR is reported
+UNAVAILABLE, which is the intended degraded behaviour).
 
----
+```bash
+python -m venv .venv && .venv/Scripts/pip install -r backend/requirements-dev.txt
+```
 
-## Getting Started (Local Execution)
+```bash
+.venv/Scripts/python -m uvicorn backend.main:app --reload --port 8000
+```
 
-### Option 1: One-Click Windows Launcher
-Double-click 
-un_local.bat in the root directory:
-`cmd
-run_local.bat
-`
-This automatically starts:
-- FastAPI backend on http://127.0.0.1:8000
-- React Vite Dashboard on http://localhost:5173
+```bash
+npm --prefix frontend ci && npm --prefix frontend run dev
+```
 
----
+Open http://localhost:5173 (Vite proxies `/api` to :8000). The full ML stack
+(`backend/requirements.txt`, incl. dlib and PyTorch) is easiest to run via Docker:
 
-### Option 2: Manual Terminal Execution
+```bash
+docker build -t docshield-backend backend/ && docker run -p 8000:8000 -e PERSISTENCE_MODE=sqlite docshield-backend
+```
 
-#### 1. Start Backend:
-`ash
-cd backend
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
-`
-API Documentation will be accessible at: http://127.0.0.1:8000/docs
+Environment variables: [.env.example](.env.example). Never put secrets in `VITE_*` variables.
 
-#### 2. Start Frontend:
-`ash
-cd frontend
-npm run dev
-`
-Officer Dashboard will be accessible at: http://localhost:5173
+## Tests
 
----
+```bash
+.venv/Scripts/python -m pytest backend/tests -q -rs
+```
 
-## Core API Endpoints
+```bash
+npm ci && npm run test:worker && npm --prefix frontend run lint
+```
 
-- **GET /api/health**: Real-time status of backend services and modules.
-- **POST /api/analyze-document**: Accepts multipart form data with document (image), optional person_image (selfie), and optional doc_type_hint. Executes complete screening pipeline and returns structured JSON dossier.
-- **POST /api/verify-face**: Compares two face images and returns similarity percentage and match verdict.
-- **GET /api/case/{case_id}**: Retrieves stored case details by ID.
-- **GET /api/cases**: Lists recent screening cases.
+CI runs these plus an API contract test, the Docker image build, full-pipeline tests inside
+the image, dependency audits and a secret scan: [.github/workflows/ci.yml](.github/workflows/ci.yml).
+Latest local results: [docs/TEST_REPORT.md](docs/TEST_REPORT.md).
 
----
+## API
 
-## Third-Party Attributions & License
-This application uses algorithms and models adapted from:
-- document-forger (MIT License)
-- idcard-face-match (MIT License)
-- FakeImageDetector / AWS Document Tampering references (MIT-0 / MIT)
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| GET | `/api/health` | none | Module states (computed) |
+| GET | `/api/ready` | none | 200 only when Worker, D1 and all models are ready |
+| POST | `/api/analyze-document` | none, rate-limited | multipart `document`, optional `person_image`, `doc_type_hint` (`AADHAAR`/`PASSPORT`/`PAN`/`VOTER_ID`); ≤ 10 MB / 10 MP per image. Returns result, `pipeline[]`, `persistence`, one-time `session_token`. |
+| GET | `/api/case/{id}` | `X-Session-Token` or reviewer bearer | Redacted record; 404 if not authorised |
+| GET | `/api/cases` | reviewer bearer | Tenant-scoped list |
+| POST | `/api/case/{id}/review` | reviewer bearer | `{decision, notes?, override_ai_verdict?}` |
+
+Verdicts: `NO_ADVERSE_INDICATORS`, `INCOMPLETE_SCREENING`, `MANUAL_REVIEW_RECOMMENDED`,
+`ESCALATE_FOR_EXPERT_REVIEW`. Reviewer decisions: `CONCUR_NO_FURTHER_ACTION`,
+`REFER_FOR_PHYSICAL_INSPECTION`, `DOCUMENT_UNVERIFIABLE`, `ESCALATE_TO_SUPERVISOR`.
+
+## Deployment, security, operations
+
+* [Deployment](docs/DEPLOYMENT.md) · [Rollback](docs/ROLLBACK.md)
+* [Security & privacy](docs/SECURITY_AND_PRIVACY.md) · [Threat model](docs/THREAT_MODEL.md)
+* [Production readiness & costs](docs/PRODUCTION_READINESS.md) · [Audit](docs/AUDIT.md)
+
+## Licence
+
+No licence has been chosen yet; all rights reserved by the owner. Third-party model licences
+(notably dlib landmark models and the OpenCV SSD face detector) have not been cleared for
+commercial use — see [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md).
+Attributions: [source_references/README.md](source_references/README.md).

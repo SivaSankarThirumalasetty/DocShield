@@ -39,14 +39,23 @@ class Settings(BaseModel):
     port: int = Field(default_factory=lambda: int(os.getenv("PORT", "8000")))
     
     # Security & CORS
+    frontend_origin: str = Field(
+        default_factory=lambda: os.getenv("FRONTEND_ORIGIN", "").strip()
+    )
+    # Production traffic is same-origin through the Cloudflare Worker, so CORS is
+    # only needed for local development (Vite on :5173 talking to uvicorn directly).
     cors_origins_raw: str = Field(
         default_factory=lambda: os.getenv(
             "CORS_ORIGINS",
-            "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
+            "http://localhost:5173,http://127.0.0.1:5173"
         )
     )
+    # Local-development officer key. There is deliberately NO default: when unset,
+    # officer-only endpoints refuse every request. In the Cloudflare deployment the
+    # Worker owns officer authentication (per-officer tokens in D1) and the
+    # container runs with PERSISTENCE_MODE=none, so this key is never used there.
     officer_key: str = Field(
-        default_factory=lambda: os.getenv("DOCSHIELD_OFFICER_KEY", "docshield-officer-secret-key-change-in-production")
+        default_factory=lambda: os.getenv("DOCSHIELD_OFFICER_KEY", "").strip()
     )
     
     # Upload & Concurrency Constraints
@@ -70,6 +79,32 @@ class Settings(BaseModel):
     enable_source_image_storage: bool = Field(
         default_factory=lambda: os.getenv("ENABLE_SOURCE_IMAGE_STORAGE", "false").lower() in ("true", "1", "yes")
     )
+    # "sqlite": local development stores cases in a local SQLite file.
+    # "none":   the backend is stateless; the Cloudflare Worker persists a redacted
+    #           case record in D1 and handles case retrieval/review.
+    persistence_mode: str = Field(
+        default_factory=lambda: os.getenv("PERSISTENCE_MODE", "sqlite").strip().lower()
+    )
+    # Load OCR / face models during startup so /ready reflects real usability.
+    preload_models: bool = Field(
+        default_factory=lambda: os.getenv("PRELOAD_MODELS", "false").lower() in ("true", "1", "yes")
+    )
+    # When true, /ready requires the deep OCR + face-embedding models as well as
+    # Tesseract. The production container image sets this.
+    require_full_pipeline: bool = Field(
+        default_factory=lambda: os.getenv("REQUIRE_FULL_PIPELINE", "false").lower() in ("true", "1", "yes")
+    )
+    # Comma-separated readiness requirements, overriding the defaults derived from
+    # REQUIRE_FULL_PIPELINE (e.g. the free Render image has no EasyOCR/PyTorch).
+    ready_requires_raw: str = Field(
+        default_factory=lambda: os.getenv("READY_REQUIRES", "").strip()
+    )
+    # When set, every request except /health must carry this value in
+    # X-DocShield-Edge-Auth. Used when the backend is reachable on the public
+    # internet (Render), so only the Cloudflare Worker can call it.
+    edge_shared_secret: str = Field(
+        default_factory=lambda: os.getenv("EDGE_SHARED_SECRET", "").strip()
+    )
     database_url: str = Field(
         default_factory=lambda: os.getenv("DATABASE_URL", f"sqlite:///{BACKEND_DIR / 'data' / 'docshield.db'}")
     )
@@ -86,6 +121,15 @@ class Settings(BaseModel):
 
     @property
     def cors_origins(self) -> List[str]:
-        return [origin.strip() for origin in self.cors_origins_raw.split(",") if origin.strip()]
+        origins = [
+            origin.strip().rstrip("/")
+            for origin in self.cors_origins_raw.split(",")
+            if origin.strip() and origin.strip() != "*"
+        ]
+        if self.frontend_origin and self.frontend_origin != "*" and self.frontend_origin.startswith(("http://", "https://")):
+            clean_fe = self.frontend_origin.rstrip("/")
+            if clean_fe not in origins:
+                origins.append(clean_fe)
+        return origins
 
 settings = Settings()

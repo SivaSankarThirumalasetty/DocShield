@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import Navbar from "./components/Navbar";
 import HomePage from "./components/HomePage";
 import ScreeningPage from "./components/ScreeningPage";
@@ -7,11 +7,12 @@ import CaseHistoryPage from "./components/CaseHistoryPage";
 import MethodologyPage from "./components/MethodologyPage";
 import PrivacyPage from "./components/PrivacyPage";
 import Footer from "./components/Footer";
-import { checkHealth, analyzeDocument, submitOfficerReview } from "./api";
+import { checkReadiness, analyzeDocument, submitOfficerReview } from "./api";
 
 export default function App() {
   const [activePage, setActivePage] = useState("home");
-  const [health, setHealth] = useState(null);
+  // Service status comes only from /api/ready (Worker + D1 + container models).
+  const [service, setService] = useState({ state: "checking", body: null });
 
   // Screening form state
   const [docFile, setDocFile] = useState(null);
@@ -29,18 +30,37 @@ export default function App() {
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
   const [reviewStatusMsg, setReviewStatusMsg] = useState(null);
 
-  useEffect(() => {
-    fetchHealth();
+  const refreshReadiness = useCallback(async (signal) => {
+    try {
+      const status = await checkReadiness(signal);
+      setService(status);
+      return status.state;
+    } catch {
+      return null; // cancelled
+    }
   }, []);
 
-  const fetchHealth = async () => {
-    try {
-      const data = await checkHealth();
-      setHealth(data);
-    } catch {
-      setHealth({ status: "offline" });
-    }
-  };
+  // Poll while the engine is starting (cold start), then stop: polling a ready
+  // service would keep the container awake and billing indefinitely.
+  useEffect(() => {
+    const controller = new AbortController();
+    let attempts = 0;
+    let timer;
+    const tick = async () => {
+      const state = await refreshReadiness(controller.signal);
+      attempts += 1;
+      if (state && state !== "ready" && attempts < 20 && !controller.signal.aborted) {
+        timer = setTimeout(tick, 10000);
+      }
+    };
+    tick();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [refreshReadiness]);
+
+  const analysisController = useRef(null);
 
   const handleLoadPreset = async (presetType) => {
     setError(null);
@@ -101,15 +121,24 @@ export default function App() {
     }
     setError(null);
     setLoading(true);
+    const controller = new AbortController();
+    analysisController.current = controller;
     try {
-      const data = await analyzeDocument(docFile, personFile, docTypeHint);
+      const data = await analyzeDocument(docFile, personFile, docTypeHint, controller.signal);
       setResult(data);
+      setService((prev) => ({ ...prev, state: "ready" }));
       setActivePage("results");
     } catch (err) {
-      setError(err.message || "Failed to execute document analysis.");
+      setError(err.message || "Document screening failed.");
+      refreshReadiness();
     } finally {
+      analysisController.current = null;
       setLoading(false);
     }
+  };
+
+  const handleCancelAnalysis = () => {
+    analysisController.current?.abort();
   };
 
   const handleOfficerSignoff = async (reviewData) => {
@@ -119,9 +148,9 @@ export default function App() {
     try {
       const updated = await submitOfficerReview(result.case_id, reviewData);
       setResult(updated);
-      setReviewStatusMsg("Officer Adjudication officially recorded and signed into docket.");
+      setReviewStatusMsg("Reviewer assessment recorded in the case audit log.");
     } catch (err) {
-      setReviewStatusMsg(`Error submitting adjudication: ${err.message}`);
+      setReviewStatusMsg(`Could not record the review: ${err.message}`);
     } finally {
       setReviewSubmitting(false);
     }
@@ -138,7 +167,7 @@ export default function App() {
       <Navbar
         activePage={activePage}
         setActivePage={setActivePage}
-        health={health}
+        service={service}
         hasResult={Boolean(result)}
       />
 
@@ -166,6 +195,8 @@ export default function App() {
             loading={loading}
             error={error}
             onAnalyze={handleAnalyze}
+            onCancel={handleCancelAnalysis}
+            serviceState={service.state}
             onReset={handleReset}
             onLoadPreset={handleLoadPreset}
           />

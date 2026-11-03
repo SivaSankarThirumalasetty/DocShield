@@ -1,0 +1,55 @@
+// DocShield production configuration — Cloudflare Workers FREE plan.
+// Static assets + /api routing + D1 + rate limiting in the Worker; the Python
+// screening backend runs on a free remote host (Render) reached at BACKEND_URL
+// with the EDGE_SHARED_SECRET Worker secret. See docs/DEPLOYMENT.md.
+//
+// Deploy (CI):  npx wrangler deploy --var BACKEND_URL:<https url> --var GIT_COMMIT:<sha>
+// Secret:       npx wrangler secret put EDGE_SHARED_SECRET
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "docshield",
+  "main": "worker/src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+
+  "assets": {
+    "directory": "./frontend/dist",
+    "binding": "ASSETS",
+    // The Worker decides: /api/* goes to the backend, unknown files get a real
+    // 404, and only extensionless navigations fall back to index.html.
+    "run_worker_first": true,
+    "not_found_handling": "none"
+  },
+
+  "vars": {
+    "DOCSHIELD_MODE": "PROTOTYPE",
+    "APP_VERSION": "2.1.0",
+    "CASE_RETENTION_HOURS": "24"
+  },
+
+  // v1 created the (now unused) container Durable Object class in the earlier
+  // deployment; v2 removes it because Containers are not available on the free plan.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["DocShieldBackendContainer"] },
+    { "tag": "v2", "deleted_classes": ["DocShieldBackendContainer"] }
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "docshield-db",
+      "database_id": "ccbed719-5867-444d-8c21-22aceca7a284",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "ratelimits": [
+    // Per client IP, per Cloudflare location (approximate by design).
+    { "name": "ANALYZE_LIMITER", "namespace_id": "4101", "simple": { "limit": 6, "period": 60 } },
+    { "name": "AUTH_LIMITER", "namespace_id": "4102", "simple": { "limit": 10, "period": 60 } }
+  ],
+
+  // Hourly retention purge of expired case records.
+  "triggers": { "crons": ["17 * * * *"] }
+}

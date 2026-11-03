@@ -116,7 +116,7 @@ class MockDatabaseService:
                                 matched_record_id=item.get("document_number"),
                                 matched_name=item.get("full_name"),
                                 watchlist_category="DEMO_REGISTRY_NAME_MISMATCH",
-                                details=f"[DEMO_WATCHLIST] Document number matches sample record for '{item.get('full_name')}', but presented name is '{name}'"
+                                details="[DEMO_WATCHLIST] Document number matches a sample record, but the extracted name differs substantially."
                             )
                     return WatchlistHit(
                         is_flagged=False,

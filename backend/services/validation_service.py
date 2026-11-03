@@ -57,17 +57,38 @@ class ValidationService:
         doc_num = (doc_info.document_number or "").replace(" ", "").upper()
 
         # 1. Document Format & Checksum Verification
-        if doc_type == "AADHAAR":
+        if doc_type in ("AADHAAR", "PAN", "PASSPORT") and not doc_num:
+            # Nothing was extracted (e.g. OCR unavailable or illegible). That is missing
+            # evidence, not a failed check, so it must not count as a validation failure.
+            flags.append(ValidationFlag(
+                check_name="Document Number Extraction",
+                field="document_number",
+                passed=False,
+                message="Document number could not be extracted; format and checksum checks were not evaluated.",
+                severity="warning",
+                evidence_state="INDETERMINATE"
+            ))
+        elif doc_type == "AADHAAR":
             if doc_num.startswith("XXXX-XXXX-"):
-                # Masked for statutory compliance
+                # Informational only; not a structural check.
                 flags.append(ValidationFlag(
                     check_name="Aadhaar Privacy Redaction",
-                    field="document_number",
+                    field="privacy",
                     passed=True,
-                    message="Aadhaar first 8 digits redacted per Section 29 Aadhaar Act 2016",
+                    message="Aadhaar number masked to last 4 digits before display and storage",
                     severity="info",
                     evidence_state="PASS"
                 ))
+                if doc_info.verhoeff_valid is not None:
+                    is_verhoeff = bool(doc_info.verhoeff_valid)
+                    flags.append(ValidationFlag(
+                        check_name="Verhoeff Checksum",
+                        field="document_number",
+                        passed=is_verhoeff,
+                        message="Aadhaar Verhoeff checksum algorithm verified (evaluated prior to redaction)" if is_verhoeff else "Aadhaar Verhoeff checksum failed: invalid card structure",
+                        severity="info" if is_verhoeff else "critical",
+                        evidence_state="PASS" if is_verhoeff else "FAIL"
+                    ))
             else:
                 digits_only = "".join(c for c in doc_num if c.isdigit())
                 if len(digits_only) == 12:
@@ -97,7 +118,7 @@ class ValidationService:
                 check_name="PAN Syntax Structure",
                 field="document_number",
                 passed=is_valid_pan,
-                message="PAN follows standard alphanumeric syntax (AAAAA9999A)" if is_valid_pan else f"PAN '{doc_num}' does not match official syntax",
+                message="PAN follows standard alphanumeric syntax (AAAAA9999A)" if is_valid_pan else "PAN number does not match the AAAAA9999A syntax",
                 severity="info" if is_valid_pan else "critical",
                 evidence_state="PASS" if is_valid_pan else "FAIL"
             ))
@@ -109,7 +130,7 @@ class ValidationService:
                 check_name="Passport Number Syntax",
                 field="document_number",
                 passed=is_valid_ppt,
-                message="Passport number adheres to standard format" if is_valid_ppt else f"Passport number '{doc_num}' deviates from standard syntax",
+                message="Passport number adheres to standard format" if is_valid_ppt else "Passport number deviates from the expected syntax",
                 severity="info" if is_valid_ppt else "warning",
                 evidence_state="PASS" if is_valid_ppt else "FAIL"
             ))
@@ -169,17 +190,16 @@ class ValidationService:
                     check_name="DOB Plausibility",
                     field="dob",
                     passed=False,
-                    message=f"Date of birth ({dob_date.isoformat()}) is in the future.",
+                    message="Extracted date of birth is in the future.",
                     severity="critical",
                     evidence_state="FAIL"
                 ))
             else:
-                age_years = (today - dob_date).days // 365
                 flags.append(ValidationFlag(
                     check_name="DOB Plausibility",
                     field="dob",
                     passed=True,
-                    message=f"Date of birth verified (Calculated age: ~{age_years} years).",
+                    message="Extracted date of birth is plausible (not in the future).",
                     severity="info",
                     evidence_state="PASS"
                 ))

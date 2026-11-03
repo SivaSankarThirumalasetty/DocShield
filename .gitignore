@@ -1,8 +1,9 @@
-# Node
+# Node & Wrangler
 node_modules/
 frontend/node_modules/
 .npm
 .vite
+.wrangler/
 
 # Python
 __pycache__/
@@ -49,3 +50,19 @@ Thumbs.db
 *.db-shm
 *.db-wal
 .pytest_cache/
+
+# Secrets & local runtime data
+.dev.vars*
+.env.*
+!.env.example
+*.pem
+*.key
+*.log
+backend/data/*.db*
+uploads/
+backend/tests/evaluation_report.json
+backend/tests/performance_report.json
+backend/tessdata/
+webui/
+DEPLOY_SHA
+.vercel/

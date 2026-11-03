@@ -1,0 +1,64 @@
+// OPTIONAL PAID configuration: Cloudflare Containers run the full backend image
+// (backend/Dockerfile, incl. EasyOCR/PyTorch). Requires the Workers Paid plan and
+// Docker at deploy time:  npx wrangler deploy -c wrangler.containers.jsonc
+// NOTE: the default free config (wrangler.jsonc) deletes the container Durable
+// Object class (migration v2). Switching back needs a new migration that
+// re-adds it (e.g. tag v3, new_sqlite_classes) — see docs/DEPLOYMENT.md.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "docshield",
+  "main": "worker/src/container.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+
+  "assets": {
+    "directory": "./frontend/dist",
+    "binding": "ASSETS",
+    // The Worker decides: /api/* goes to the container, unknown files get a real
+    // 404, and only extensionless navigations fall back to index.html.
+    "run_worker_first": true,
+    "not_found_handling": "none"
+  },
+
+  "vars": {
+    "DOCSHIELD_MODE": "PROTOTYPE",
+    "APP_VERSION": "2.1.0",
+    "CASE_RETENTION_HOURS": "24"
+  },
+
+  "containers": [
+    {
+      "class_name": "DocShieldBackendContainer",
+      "image": "./backend/Dockerfile",
+      // 1 vCPU / 6 GiB / 12 GB disk. EasyOCR + PyTorch + dlib need well over 1 GiB.
+      "instance_type": "standard-2",
+      "max_instances": 2
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [{ "name": "DOCSHIELD_BACKEND", "class_name": "DocShieldBackendContainer" }]
+  },
+
+  // Unchanged from the existing deployment so no Durable Object migration is needed.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DocShieldBackendContainer"] }],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "docshield-db",
+      "database_id": "ccbed719-5867-444d-8c21-22aceca7a284",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "ratelimits": [
+    // Per client IP, per Cloudflare location (approximate by design).
+    { "name": "ANALYZE_LIMITER", "namespace_id": "4101", "simple": { "limit": 10, "period": 60 } },
+    { "name": "AUTH_LIMITER", "namespace_id": "4102", "simple": { "limit": 10, "period": 60 } }
+  ],
+
+  // Hourly retention purge of expired case records.
+  "triggers": { "crons": ["17 * * * *"] }
+}

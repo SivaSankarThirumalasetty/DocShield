@@ -1,123 +1,175 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+// API client. Production and local development are both same-origin:
+// production goes through the Cloudflare Worker, local dev through the Vite proxy.
+export const API_BASE = "";
 
-// Ephemeral in-memory session token store for active analysis
-let currentSessionToken = null;
-let currentOfficerKey = "";
+// The free backend (0.1 CPU) can take a minute to wake and ~1-2 minutes per screening.
+const ANALYZE_TIMEOUT_MS = 300000;
+const DEFAULT_TIMEOUT_MS = 30000;
+// Hosting platforms cap request bodies (e.g. 4.5 MB on Vercel Functions); set per build.
+const MAX_TOTAL_UPLOAD_BYTES = Math.floor(Number(import.meta.env.VITE_MAX_UPLOAD_TOTAL_MB || 20) * 1048576);
+const READY_TIMEOUT_MS = 95000;
+const REVIEWER_TOKEN_KEY = "docshield_reviewer_token";
+
+// Reviewer bearer token: kept for this browser tab only (sessionStorage), never localStorage.
+let reviewerToken = "";
 try {
-  currentOfficerKey = typeof window !== "undefined" && window.localStorage ? localStorage.getItem("docshield_officer_key") || "" : "";
+  reviewerToken = window.sessionStorage.getItem(REVIEWER_TOKEN_KEY) || "";
 } catch (_) {
-  currentOfficerKey = "";
+  reviewerToken = "";
 }
 
-export function setOfficerKey(key) {
-  currentOfficerKey = key || "";
+export function setReviewerToken(token) {
+  reviewerToken = (token || "").trim();
   try {
-    if (typeof window !== "undefined" && window.localStorage) {
-      if (key) {
-        localStorage.setItem("docshield_officer_key", key);
-      } else {
-        localStorage.removeItem("docshield_officer_key");
-      }
-    }
-  } catch (_) {}
+    if (reviewerToken) window.sessionStorage.setItem(REVIEWER_TOKEN_KEY, reviewerToken);
+    else window.sessionStorage.removeItem(REVIEWER_TOKEN_KEY);
+  } catch (_) {
+    // Storage unavailable (private mode / blocked): token stays in memory only.
+  }
 }
 
-export function getOfficerKey() {
-  return currentOfficerKey;
+export function getReviewerToken() {
+  return reviewerToken;
 }
 
+// The submitter's case token lives only in memory for the current page session.
+let currentSessionToken = null;
 export function getSessionToken() {
   return currentSessionToken;
 }
 
-export async function checkHealth() {
-  const res = await fetch(`${API_BASE}/api/health`, {
-    headers: { "Cache-Control": "no-cache" }
-  });
-  if (!res.ok) throw new Error("Health check failed");
-  return res.json();
+function authHeaders() {
+  return reviewerToken ? { Authorization: `Bearer ${reviewerToken}` } : {};
 }
 
-export async function analyzeDocument(docFile, personFile = null, docTypeHint = "auto") {
+function sanitizeErrorMessage(status, rawDetail) {
+  if (status === 413) return "File too large. Each image must be 10 MB or smaller.";
+  if (status === 415) return "Unsupported upload. Only JPEG, PNG and WebP images are accepted.";
+  if (status === 429) return "Too many requests. Please wait a minute and try again.";
+  if (status === 503 || status === 504) {
+    return "The screening engine is starting or busy. Please retry in a few seconds.";
+  }
+  if (status === 502) return "The screening engine returned an error. Please try again.";
+  if (typeof rawDetail === "string" && rawDetail.trim() && rawDetail.length < 300 && !rawDetail.trim().startsWith("<")) {
+    return rawDetail.trim();
+  }
+  if (status === 400 || status === 422) return "Invalid upload or request. Please use a clear JPEG, PNG or WebP image.";
+  if (status === 401) return "Reviewer authentication required.";
+  if (status === 404) return "Not found, or you are not authorised to view it.";
+  return "Unexpected service error. Please try again.";
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  const external = options.signal;
+  const onAbort = () => controller.abort("cancelled");
+  if (external) external.addEventListener("abort", onAbort);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal, cache: "no-store" });
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        controller.signal.reason === "cancelled"
+          ? "Request cancelled."
+          : "The request timed out. The screening engine may be starting; please retry.",
+        { cause: err }
+      );
+    }
+    throw new Error("Could not reach the DocShield service. Check your connection and retry.", { cause: err });
+  } finally {
+    clearTimeout(timer);
+    if (external) external.removeEventListener("abort", onAbort);
+  }
+}
+
+async function errorFrom(res) {
+  let detail = null;
+  try {
+    const body = await res.json();
+    if (typeof body?.detail === "string") detail = body.detail;
+  } catch (_) {
+    // Non-JSON error body: fall back to a status-based message.
+  }
+  return new Error(sanitizeErrorMessage(res.status, detail));
+}
+
+/**
+ * Real readiness of the whole stack (Worker + D1 + container models).
+ * Resolves to { state: "ready" | "starting" | "unavailable", body }.
+ */
+export async function checkReadiness(signal) {
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/ready`, { signal }, READY_TIMEOUT_MS);
+    const body = await res.json().catch(() => null);
+    if (res.ok && body?.status === "ready") return { state: "ready", body };
+    if (res.status === 503 && body) return { state: "starting", body };
+    return { state: "unavailable", body };
+  } catch (err) {
+    if (err.message === "Request cancelled.") throw err;
+    return { state: "unavailable", body: null };
+  }
+}
+
+export async function analyzeDocument(docFile, personFile = null, docTypeHint = "auto", signal) {
+  if (!docFile) throw new Error("Please select an identity document image to screen.");
+  if (docFile.size === 0) throw new Error("The selected document file is empty.");
+  if (docFile.size > 10 * 1024 * 1024) throw new Error("The document image exceeds 10 MB.");
+  if (personFile && personFile.size > 10 * 1024 * 1024) throw new Error("The person photo exceeds 10 MB.");
+  const total = docFile.size + (personFile ? personFile.size : 0);
+  if (total > MAX_TOTAL_UPLOAD_BYTES) {
+    throw new Error(
+      `This deployment accepts at most ${(MAX_TOTAL_UPLOAD_BYTES / 1048576).toFixed(1)} MB per screening (document + photo). Please use smaller images.`
+    );
+  }
+
   const formData = new FormData();
   formData.append("document", docFile);
-  if (personFile) {
-    formData.append("person_image", personFile);
-  }
-  if (docTypeHint && docTypeHint !== "auto") {
-    formData.append("doc_type_hint", docTypeHint);
-  }
+  if (personFile) formData.append("person_image", personFile);
+  if (docTypeHint && docTypeHint !== "auto") formData.append("doc_type_hint", docTypeHint);
 
-  const res = await fetch(`${API_BASE}/api/analyze-document`, {
-    method: "POST",
-    body: formData,
-  });
-
-  if (!res.ok) {
-    let msg = "Verification service error. Please try again.";
-    try {
-      const errData = await res.json();
-      if (errData && errData.detail) {
-        msg = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
-      }
-    } catch (_) {
-      try {
-        const text = await res.text();
-        if (text) msg = `Verification service error: ${text}`;
-      } catch (__) {}
-    }
-    throw new Error(msg);
-  }
-
+  const res = await fetchWithTimeout(`${API_BASE}/api/analyze-document`, { method: "POST", body: formData, signal }, ANALYZE_TIMEOUT_MS);
+  if (!res.ok) throw await errorFrom(res);
   const data = await res.json();
-  if (data && data.session_token) {
-    currentSessionToken = data.session_token;
+  // The edge adds the case token and storage status as headers (the body is the
+  // backend's result, streamed through unmodified).
+  data.session_token = res.headers.get("X-DocShield-Session-Token") || null;
+  try {
+    data.persistence = JSON.parse(res.headers.get("X-DocShield-Persistence") || "null") || data.persistence;
+  } catch (_) {
+    // Malformed header: keep the backend's own persistence field.
   }
+  currentSessionToken = data.session_token;
   return data;
 }
 
 export async function getCase(caseId, sessionToken = null) {
   const token = sessionToken || currentSessionToken;
-  const headers = { "Cache-Control": "no-cache" };
+  const headers = { ...authHeaders() };
   if (token) headers["X-Session-Token"] = token;
-  if (currentOfficerKey) headers["X-Officer-Key"] = currentOfficerKey;
+  const res = await fetchWithTimeout(`${API_BASE}/api/case/${encodeURIComponent(caseId)}`, { headers });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
 
-  const res = await fetch(`${API_BASE}/api/case/${caseId}`, { headers });
-  if (!res.ok) {
-    if (res.status === 403) throw new Error("Access denied: Authorization required to view case.");
-    if (res.status === 404) throw new Error("Case not found.");
-    throw new Error("Failed to fetch case details.");
-  }
+export async function getReviewerProfile() {
+  const res = await fetchWithTimeout(`${API_BASE}/api/officer/me`, { headers: authHeaders() });
+  if (!res.ok) throw await errorFrom(res);
   return res.json();
 }
 
 export async function listCases() {
-  const headers = { "Cache-Control": "no-cache" };
-  if (currentOfficerKey) headers["X-Officer-Key"] = currentOfficerKey;
-
-  const res = await fetch(`${API_BASE}/api/cases`, { headers });
-  if (!res.ok) {
-    if (res.status === 401) throw new Error("Officer authorization required to view case history.");
-    throw new Error("Failed to fetch cases");
-  }
+  const res = await fetchWithTimeout(`${API_BASE}/api/cases`, { headers: authHeaders() });
+  if (!res.ok) throw await errorFrom(res);
   return res.json();
 }
 
 export async function submitOfficerReview(caseId, reviewData) {
-  const headers = {
-    "Content-Type": "application/json",
-    "Cache-Control": "no-cache"
-  };
-  if (currentOfficerKey) headers["X-Officer-Key"] = currentOfficerKey;
-
-  const res = await fetch(`${API_BASE}/api/case/${caseId}/review`, {
+  const res = await fetchWithTimeout(`${API_BASE}/api/case/${encodeURIComponent(caseId)}/review`, {
     method: "POST",
-    headers: headers,
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(reviewData),
   });
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.detail || `Failed to submit review: ${res.statusText}`);
-  }
+  if (!res.ok) throw await errorFrom(res);
   return res.json();
 }

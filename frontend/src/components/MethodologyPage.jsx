@@ -17,7 +17,7 @@ export default function MethodologyPage() {
       <div className="prototype-advisory-box">
         <AlertTriangle size={18} />
         <div>
-          <strong>Statutory Accuracy Disclosure:</strong> DocShield is a hackathon prototype developed for Smart India Hackathon 2026. 
+          <strong>Accuracy disclosure:</strong> DocShield is a hackathon prototype developed for Smart India Hackathon 2026. 
           Its algorithms are <em>not validated for production accuracy</em> and provide advisory signals for experimental evaluation only.
         </div>
       </div>
@@ -29,7 +29,7 @@ export default function MethodologyPage() {
           <span>Empirical Evaluation Benchmark (Test Fixture Corpus)</span>
         </h2>
         <p className="section-intro">
-          Reproducible benchmark results generated via automated testing against repository sample fixtures (N=3):
+          Smoke-test results on the 3 synthetic repository fixtures (N=3). These are NOT accuracy estimates: three synthetic images cannot measure real-world performance, false-positive/negative rates, or bias.
         </p>
 
         <table className="docket-table full-table">
@@ -124,7 +124,7 @@ export default function MethodologyPage() {
             <div className="stage-badge-number">05</div>
             <h3 className="stage-heading">Mathematical Checksum Verification</h3>
             <p>
-              Calculates the Verhoeff check digit over the dihedral group \(D_5\) for Indian 12-digit Aadhaar numbers. Checksum failure flags counterfeit credential numbers immediately with high penalty.
+              Calculates the Verhoeff check digit over the dihedral group D₅ for Indian 12-digit Aadhaar numbers. Checksum failure flags counterfeit credential numbers immediately with high penalty.
             </p>
           </div>
 
@@ -142,7 +142,7 @@ export default function MethodologyPage() {
             <div className="stage-badge-number">07</div>
             <h3 className="stage-heading">Quality-Controlled Face Detection</h3>
             <p>
-              Locates human face bounding boxes on document scans and live selfies. Enforces quality constraints: rejects multi-face photos ($&gt;1$) or tiny crops ($&lt; 45\text{px}$) as <code>INDETERMINATE</code> with explicit flags.
+              Locates human face bounding boxes on document scans and live selfies. Enforces quality constraints: rejects multi-face photos (&gt; 1) or tiny crops (&lt; 45px) as <code>INDETERMINATE</code> with explicit flags.
             </p>
           </div>
 
@@ -151,7 +151,7 @@ export default function MethodologyPage() {
             <div className="stage-badge-number">08</div>
             <h3 className="stage-heading">1:1 Biometric Facial Comparison</h3>
             <p>
-              Extracts 128-dimensional deep metric learning embeddings using a dlib ResNet model. Calculates Euclidean distance with standard operational threshold \(\theta = 0.60\).
+              Extracts 128-dimensional deep metric learning embeddings using a dlib ResNet model. Calculates Euclidean distance with standard operational threshold θ = 0.60.
             </p>
           </div>
 
@@ -185,9 +185,9 @@ export default function MethodologyPage() {
           {/* Stage 12 */}
           <div className="stage-detail-card">
             <div className="stage-badge-number">12</div>
-            <h3 className="stage-heading">Risk Aggregation &amp; Officer Adjudication</h3>
+            <h3 className="stage-heading">Risk Aggregation &amp; Human Review</h3>
             <p>
-              Integrates weighted signal penalties into an explainable 0–100 Risk Score. All outputs remain advisory; statutory clearance requires human review and sign-off by a designated clearance officer.
+              Integrates weighted signal penalties into an explainable 0–100 Risk Score. All outputs remain advisory; every decision requires review by a qualified human. The score is a heuristic and is not a calibrated probability.
             </p>
           </div>
         </div>

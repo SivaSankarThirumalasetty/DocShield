@@ -1,0 +1,117 @@
+name: Deploy to Cloudflare (free plan)
+
+# Production deploys only from master, after the full CI suite passes.
+# Requires (see docs/DEPLOYMENT.md):
+#   secrets.CLOUDFLARE_API_TOKEN, secrets.CLOUDFLARE_ACCOUNT_ID,
+#   secrets.EDGE_SHARED_SECRET  (same value as the Render service env var)
+#   vars.BACKEND_URL            (https URL of the Render free web service)
+#   GitHub Environment "production" (add required reviewers to gate releases)
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  PRODUCTION_URL: https://docshield.sivasankar-t1606.workers.dev
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment:
+      name: production
+      url: ${{ env.PRODUCTION_URL }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      EDGE_SHARED_SECRET: ${{ secrets.EDGE_SHARED_SECRET }}
+      BACKEND_URL: ${{ vars.BACKEND_URL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Check configuration is present
+        run: |
+          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID EDGE_SHARED_SECRET BACKEND_URL; do
+            test -n "${!v}" || { echo "::error::$v is not configured"; exit 1; }
+          done
+          case "$BACKEND_URL" in https://*) ;; *) echo "::error::BACKEND_URL must be https"; exit 1;; esac
+      - name: Backend reachable and enforcing the edge secret
+        run: |
+          # Wakes the free backend (Render sleeps after 15 min idle; ~1 min to wake).
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 120 "$BACKEND_URL/health" || true)
+            [ "$code" = "200" ] && break; sleep 10
+          done
+          test "$code" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$BACKEND_URL/api/ready")" = "401"
+      - run: npm ci
+      - run: npm run build
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply docshield-db --remote
+      - name: Deploy Worker and static assets
+        run: npx wrangler deploy --var BACKEND_URL:"$BACKEND_URL" --var GIT_COMMIT:${{ github.sha }}
+      - name: Set the edge secret on the Worker
+        run: printf '%s' "$EDGE_SHARED_SECRET" | npx wrangler secret put EDGE_SHARED_SECRET
+      - name: Wait for end-to-end readiness of this commit
+        run: |
+          for i in $(seq 1 40); do
+            code=$(curl -s -o ready.json -w '%{http_code}' --max-time 100 "$PRODUCTION_URL/api/ready" || true)
+            commit=$(python3 -c "import json;print(json.load(open('ready.json')).get('edge',{}).get('commit',''))" 2>/dev/null || true)
+            echo "attempt $i: HTTP $code commit=$commit"
+            if [ "$code" = "200" ] && [ "$commit" = "${{ github.sha }}" ]; then break; fi
+            sleep 15
+          done
+          cat ready.json; echo
+          test "$code" = "200" && test "$commit" = "${{ github.sha }}"
+      - name: Live smoke tests (synthetic samples only)
+        run: |
+          set -e
+          test "$(curl -s -o /dev/null -w '%{http_code}' $PRODUCTION_URL/)" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' $PRODUCTION_URL/assets/does-not-exist.js)" = "404"
+          curl -s $PRODUCTION_URL/api/nope | grep -q '"detail"'
+          test "$(curl -s -o /dev/null -w '%{http_code}' $PRODUCTION_URL/api/cases)" = "401"
+          start=$(date +%s)
+          curl -sf --max-time 290 -D headers.txt -F "document=@sample_data/aadhaar_invalid_checksum.png" -F doc_type_hint=AADHAAR \
+            $PRODUCTION_URL/api/analyze-document -o result.json
+          echo "::notice::live screening took $(( $(date +%s) - start ))s"
+          python3 - <<'PY'
+          import json
+          d = json.load(open("result.json"))
+          h = {k.lower(): v.strip() for k, v in (l.split(":", 1) for l in open("headers.txt") if ":" in l)}
+          stages = {s["stage"]: s["status"] for s in d["pipeline"]}
+          persistence = json.loads(h.get("x-docshield-persistence", "{}"))
+          print(f"::notice::case {d['case_id']} verdict {d['risk_assessment']['verdict']} stages {stages} persistence {persistence.get('status')}")
+          assert stages["ocr"] == "COMPLETED"
+          assert d["validation"]["overall_valid"] is False
+          assert persistence.get("status") == "STORED" and h.get("x-docshield-session-token")
+          assert "x-docshield-case-record" not in h
+          open("case.env", "w").write(f"CASE_ID={d['case_id']}\nTOKEN={h['x-docshield-session-token']}\n")
+          PY
+          . ./case.env
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Session-Token: $TOKEN" $PRODUCTION_URL/api/case/$CASE_ID)" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' $PRODUCTION_URL/api/case/$CASE_ID)" = "404"
+      - name: Deployment summary
+        if: always()
+        run: |
+          {
+            echo "### DocShield production deployment"
+            echo "- Commit: ${{ github.sha }}"
+            echo "- URL: $PRODUCTION_URL"
+            echo "- Readiness: $(head -c 600 ready.json 2>/dev/null)"
+            echo '- Rollback: docs/ROLLBACK.md (npx wrangler rollback; Render: redeploy previous deploy)'
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f case.env result.json headers.txt

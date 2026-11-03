@@ -30,7 +30,7 @@ export default function HomePage({ onStartScreening, onExploreMethodology }) {
         <p className="hero-description">
           DocShield analyzes identity credentials through multi-signal optical extraction, 
           mathematical checksums, compression discrepancy heuristics, and 1:1 facial biometric embeddings.
-          Designed to provide explainable risk indicators for authorized border clearance officers.
+          It produces explainable, advisory indicators for a qualified human reviewer. It is a prototype, not a verification service.
         </p>
 
         <div className="hero-actions">
@@ -79,7 +79,7 @@ export default function HomePage({ onStartScreening, onExploreMethodology }) {
             </div>
             <h3 className="pillar-title">1. OCR &amp; Standard Layouts</h3>
             <p className="pillar-text">
-              Extracts text tokens via dual-engine OCR (EasyOCR / Tesseract), scores token-level mean confidence, and enforces non-guessing classification against statutory anchors.
+              Extracts text tokens via dual-engine OCR (EasyOCR / Tesseract), scores token-level mean confidence, and leaves documents UNKNOWN unless explicit layout anchors are found.
             </p>
             <div className="pillar-spec">
               <span>Standard:</span> ICAO Doc 9303 Part 4 TD3 / UIDAI Layout
@@ -154,16 +154,16 @@ export default function HomePage({ onStartScreening, onExploreMethodology }) {
                 <strong>Strict checksum validation:</strong> Identifies forged or manipulated ID numbers through standard check digit mathematics.
               </li>
               <li>
-                <strong>Quality-controlled biometrics:</strong> Rejects ambiguous inputs such as multi-face photos or tiny crops ($&lt; 45\text{px}$) as indeterminate.
+                <strong>Quality-controlled biometrics:</strong> Rejects ambiguous inputs such as multi-face photos or tiny crops (&lt; 45px) as indeterminate.
               </li>
               <li>
                 <strong>Ephemeral in-memory processing:</strong> Uploaded images are discarded immediately after analysis, never stored permanently.
               </li>
               <li>
-                <strong>Aadhaar privacy masking:</strong> Masks 12-digit Indian Aadhaar numbers to <code>XXXX-XXXX-1234</code> in compliance with privacy mandates.
+                <strong>Aadhaar privacy masking:</strong> Masks 12-digit Indian Aadhaar numbers to <code>XXXX-XXXX-1234</code> before display or storage. Masking alone does not establish legal compliance.
               </li>
               <li>
-                <strong>Human-in-the-loop review:</strong> Reserves final clearance authority for designated human immigration officers.
+                <strong>Human-in-the-loop review:</strong> Every consequential decision stays with a qualified human reviewer.
               </li>
             </ul>
           </div>

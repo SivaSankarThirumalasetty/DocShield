@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from enum import Enum
 from pydantic import BaseModel, Field
 
@@ -9,10 +9,34 @@ class EvidenceState(str, Enum):
     UNAVAILABLE = "UNAVAILABLE"
     DEMO = "DEMO"
 
+ADVISORY_NOTICE = (
+    "PROTOTYPE / ADVISORY ONLY. DocShield is an AI-assisted document screening prototype. "
+    "It is not a government verification service, registry checks use SIMULATED demo data, "
+    "and no output is a determination of identity, authenticity, or eligibility. "
+    "A qualified human reviewer is responsible for every consequential decision."
+)
+
+# Advisory verdicts. None of these authorises, denies, or detains anyone.
+Verdict = Literal[
+    "NO_ADVERSE_INDICATORS",
+    "INCOMPLETE_SCREENING",
+    "MANUAL_REVIEW_RECOMMENDED",
+    "ESCALATE_FOR_EXPERT_REVIEW",
+]
+
+# Reviewer outcomes recorded against a case. These describe the reviewer's own
+# assessment of the screening; they are not automated or legal determinations.
+ReviewerDecision = Literal[
+    "CONCUR_NO_FURTHER_ACTION",
+    "REFER_FOR_PHYSICAL_INSPECTION",
+    "DOCUMENT_UNVERIFIABLE",
+    "ESCALATE_TO_SUPERVISOR",
+]
+
 class HealthResponse(BaseModel):
     status: str = 'healthy'
-    service: str = 'DocShield Border Screening Engine'
-    version: str = '2.0.0-audited'
+    service: str = 'DocShield Screening Engine (Prototype)'
+    version: str = '2.1.0'
     timestamp: str
     modules: Dict[str, bool] = Field(default_factory=dict)
     system_notes: List[str] = Field(default_factory=list)
@@ -32,6 +56,7 @@ class ExtractedFields(BaseModel):
     ocr_confidence: float = 0.0
     evidence_state: str = "INDETERMINATE"
     raw_text_preview: str = ''
+    verhoeff_valid: Optional[bool] = Field(default=None, exclude=True)
 
 class ValidationFlag(BaseModel):
     check_name: str
@@ -84,28 +109,39 @@ class FaceVerificationResult(BaseModel):
 
 class RiskAssessment(BaseModel):
     score: int = 0  # 0 to 100
-    level: str = 'LOW'  # 'LOW', 'MEDIUM', 'HIGH'
-    verdict: str = 'CLEARED'  # 'CLEARED', 'SECONDARY_INSPECTION', 'DETENTION_ALERT'
+    level: str = 'MEDIUM'  # 'LOW', 'MEDIUM', 'HIGH'
+    verdict: Verdict = 'INCOMPLETE_SCREENING'
     reasons: List[str] = Field(default_factory=list)
-    recommended_action: str = 'Allow passage'
+    recommended_action: str = 'Manual review by a qualified reviewer is required.'
     breakdown: Dict[str, float] = Field(default_factory=dict)
     evidence_states: Dict[str, str] = Field(default_factory=dict)
+    # Signals that could not be evaluated. A non-empty list prevents NO_ADVERSE_INDICATORS.
+    unavailable_signals: List[str] = Field(default_factory=list)
+    score_interpretation: str = (
+        "Heuristic, uncalibrated advisory score (0-100). It is NOT a probability of fraud "
+        "and has not been validated on a representative dataset."
+    )
 
 class OfficerReview(BaseModel):
     reviewed: bool = False
     officer_id: Optional[str] = None
     officer_name: Optional[str] = None
-    decision: Optional[str] = None  # 'CLEARED_FOR_ENTRY', 'SECONDARY_INSPECTION', 'DENIED_ENTRY', 'DETAINED'
+    decision: Optional[ReviewerDecision] = None
     override_ai_verdict: bool = False
     notes: Optional[str] = None
     timestamp: Optional[str] = None
 
 class OfficerReviewRequest(BaseModel):
-    officer_id: str
-    officer_name: str
-    decision: str
+    officer_id: str = Field(..., min_length=1, max_length=64)
+    officer_name: str = Field(..., min_length=1, max_length=128)
+    decision: ReviewerDecision
     override_ai_verdict: bool = False
-    notes: Optional[str] = None
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+class PipelineStage(BaseModel):
+    stage: str
+    status: Literal["COMPLETED", "FAILED", "UNAVAILABLE", "NOT_APPLICABLE", "SKIPPED"]
+    detail: Optional[str] = None
 
 class ScreeningResult(BaseModel):
     case_id: str
@@ -117,6 +153,10 @@ class ScreeningResult(BaseModel):
     tampering: TamperAnalysisResult
     face_verification: FaceVerificationResult
     risk_assessment: RiskAssessment
+    pipeline: List[PipelineStage] = Field(default_factory=list)
+    advisory_notice: str = ADVISORY_NOTICE
+    # Where (and whether) a redacted case record was stored. Never claims storage that did not happen.
+    persistence: Dict[str, Any] = Field(default_factory=lambda: {"status": "NOT_STORED"})
     officer_review: Optional[OfficerReview] = None
     document_preview_base64: Optional[str] = None
     person_preview_base64: Optional[str] = None

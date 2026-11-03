@@ -22,13 +22,12 @@ def test_security_headers_present():
     
     # Anti-Caching Directives
     assert "no-store" in headers.get("cache-control", "")
-    assert "no-cache" in headers.get("cache-control", "")
-    assert headers.get("pragma") == "no-cache"
+    assert headers.get("content-security-policy") == "default-src 'none'; frame-ancestors 'none'"
+    assert headers.get("x-request-id")
     
     # Defensive Security Headers
     assert headers.get("x-frame-options") == "DENY"
     assert headers.get("x-content-type-options") == "nosniff"
-    assert headers.get("x-xss-protection") == "1; mode=block"
     assert "frame-ancestors 'none'" in headers.get("content-security-policy", "")
 
 def test_path_traversal_sanitization():
@@ -50,17 +49,17 @@ def test_case_authorization_workflow():
     session_token = data.get("session_token")
     assert session_token is not None
 
-    # 2. Access without session token or officer key -> must be FORBIDDEN (403)
+    # 2. Access without session token or officer key -> must be indistinguishable from not-found (404)
     unauthorized_res = client.get(f"/api/case/{case_id}")
-    assert unauthorized_res.status_code == 403
-    assert "Access denied" in unauthorized_res.json()["detail"]
+    assert unauthorized_res.status_code == 404
+    assert "access denied" in unauthorized_res.json()["detail"]
 
-    # 3. Access with invalid session token -> must be FORBIDDEN (403)
+    # 3. Access with invalid session token -> must be indistinguishable from not-found (404)
     bad_token_res = client.get(
         f"/api/case/{case_id}",
         headers={"X-Session-Token": "invalid_fake_token_12345"}
     )
-    assert bad_token_res.status_code == 403
+    assert bad_token_res.status_code == 404
 
     # 4. Access with valid session token -> must SUCCEED (200)
     authorized_res = client.get(
@@ -104,7 +103,7 @@ def test_officer_review_authorization():
     review_payload = {
         "officer_id": "TEST-OFC-1",
         "officer_name": "Test Officer",
-        "decision": "CLEARED_FOR_ENTRY",
+        "decision": "CONCUR_NO_FURTHER_ACTION",
         "notes": "Verified"
     }
 
@@ -122,4 +121,4 @@ def test_officer_review_authorization():
         json=review_payload
     )
     assert authorized_review.status_code == 200
-    assert authorized_review.json()["officer_review"]["decision"] == "CLEARED_FOR_ENTRY"
+    assert authorized_review.json()["officer_review"]["decision"] == "CONCUR_NO_FURTHER_ACTION"

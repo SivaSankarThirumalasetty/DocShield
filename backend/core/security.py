@@ -1,6 +1,5 @@
 import io
 import re
-import os
 import hashlib
 import secrets
 from pathlib import Path
@@ -52,10 +51,13 @@ def sanitize_filename(filename: Optional[str]) -> str:
     """Strips directory traversal sequences (..) and special characters from user filenames."""
     if not filename:
         return "upload.bin"
-    # Take basename only to defeat directory traversal
-    base = os.path.basename(filename)
+    # Take the last path component for BOTH separators: os.path.basename on Linux
+    # does not split on "\", so "..\\..\\win.ini" would otherwise survive intact.
+    base = re.split(r"[\\/]", filename)[-1]
     # Remove all non-alphanumeric characters except dot, dash, underscore
     clean = re.sub(r'[^a-zA-Z0-9._-]', '', base)
+    # No leading dots: rules out "..", "." and hidden-file names.
+    clean = clean.lstrip(".")
     return clean or "upload.bin"
 
 def validate_image_upload(raw_bytes: bytes, field_name: str = "document") -> Image.Image:
@@ -76,7 +78,7 @@ def validate_image_upload(raw_bytes: bytes, field_name: str = "document") -> Ima
     if len(raw_bytes) > settings.max_upload_size_bytes:
         logger.warning(f"Upload rejected: {field_name} size ({len(raw_bytes)} bytes) exceeds limit.")
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=getattr(status, "HTTP_413_CONTENT_TOO_LARGE", 413),
             detail=f"Uploaded {field_name} exceeds maximum allowed size of {settings.max_upload_size_bytes // (1024 * 1024)}MB."
         )
 
@@ -136,9 +138,15 @@ def hash_token(raw_token: str) -> str:
     """Computes SHA-256 hash of a raw token."""
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
+def is_valid_officer_key(candidate: Optional[str]) -> bool:
+    """Constant-time comparison; always False when no officer key is configured."""
+    if not settings.officer_key or not candidate:
+        return False
+    return secrets.compare_digest(candidate.encode("utf-8"), settings.officer_key.encode("utf-8"))
+
 def verify_officer_token(x_officer_key: Optional[str] = Header(None)) -> str:
-    """Enforces authorization for officer review, audit logs, and case queries."""
-    if not x_officer_key or x_officer_key != settings.officer_key:
+    """Enforces authorization for officer review, audit logs, and case queries (local SQLite mode)."""
+    if not is_valid_officer_key(x_officer_key):
         logger.warning("Unauthorized attempt to access protected officer endpoint.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

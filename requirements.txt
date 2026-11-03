@@ -1,0 +1,16 @@
+# Vercel Python runtime dependencies (FastAPI preset, Python 3.12).
+# Same pipeline as backend/requirements.txt minus EasyOCR/PyTorch; Tesseract runs as a
+# library via tesserocr (wheel bundles libtesseract 5.5); dlib from a prebuilt wheel with
+# a direct dlib embedder (backend/services/face_service.py) instead of face_recognition.
+fastapi==0.162.0
+uvicorn==0.54.0
+pydantic==2.14.2
+python-multipart==0.0.33
+numpy==2.4.6
+opencv-python-headless==4.14.0.94
+pillow==13.0.0
+sqlalchemy==2.1.6
+tesserocr==2.12.0
+dlib-bin==20.0.1.post1
+face-recognition-models==0.3.0
+setuptools==80.10.2

@@ -1,120 +1,86 @@
-# DocShield Adversarial QA, Penetration Testing & Reliability Report
+# Test Report
 
-**Evaluation Date:** October 1, 2026  
-**Auditor:** Principal SDET, Application Security & Reliability Engineer  
-**Target System:** DocShield Identity Document Screening Platform (v2.0.0)  
-**Execution Environment:** Windows / Python 3.11.3 / Pytest 9.1.1 / Node 20.x / Vite 5.4  
+Generated 2026-11-02 on the audit machine (Windows 11, Python 3.11, Node 24.21).
+CI results are recorded in GitHub Actions for each commit; this file records only what
+was actually run here. Nothing below was run in Docker or against the live site unless stated.
 
----
+## Environment limits on the audit machine
 
-## 1. Executive Summary
+No Docker, no Tesseract, no dlib/face_recognition, no EasyOCR/PyTorch. The full ML pipeline
+therefore runs only in the CI `container` job (inside the production image). Locally, the
+pipeline ran in degraded mode, which is itself a tested behaviour.
 
-A comprehensive adversarial QA, penetration testing, and performance profiling campaign was executed against the DocShield platform. Over **71 automated test cases** and empirical benchmarks were executed across the API, computer-vision models, security filters, and persistence layers.
+## Results
 
-### Key Audit Findings:
-1. **Total Automated Tests Executed:** 71 test cases
-2. **Passed on Initial Run:** 68 passed, 3 failed
-3. **Vulnerabilities / Bugs Identified & Remediated:** 
-   - *Bug #1 (High)*: Mock Database service threw an unhandled `AttributeError` when initialized with string file paths (`'str' object has no attribute 'exists'`).
-   - *Bug #2 (High)*: Missing or corrupted mock database file fell through to `status='CLEARED'`, falsely certifying documents when the registry was offline. Fixed to return `status='UNAVAILABLE'`.
-   - *Bug #3 (Medium)*: Missing client-side file size and format validation allowed oversized or empty files to trigger unnecessary server-side network transfers. Fixed with immediate client-side feedback.
-4. **Final Test Suite Status:** **71 / 71 PASSED (100%)**
-5. **Production Readiness Verdict:** **READY FOR DEPLOYMENT AS AN ADVISORY PROTOTYPE**
+| Suite | Command | Result |
+|---|---|---|
+| Baseline before changes | `pytest backend/tests tests` | 85 passed, 1 failed (real-OCR e2e) |
+| Backend unit / security / upload / auth / persistence / product-boundary | `pytest backend/tests -q -rs` | **95 passed, 1 skipped** (real-OCR e2e: needs Tesseract + dlib; runs in CI container job) |
+| Worker unit (routing, auth, tenant isolation, D1 via real migration SQL, retention, redaction, limits) | `npm run test:worker` | **16 passed**, 1 skipped (contract suite, needs `BACKEND_URL`) |
+| Worker ↔ FastAPI API contract (real uvicorn, `PERSISTENCE_MODE=none`) | `BACKEND_URL=http://127.0.0.1:8765 node --test worker/test/contract.test.mjs` | **4 passed** |
+| Frontend lint | `npm --prefix frontend run lint` | clean (0 warnings) |
+| Frontend build | `npm run build` | OK (JS 235.7 kB / 68.4 kB gzip) |
+| Wrangler config + bundle | `wrangler deploy --dry-run --containers-rollout=none` | OK — all bindings resolve (DO, D1 `docshield-db`, 2 rate limiters, assets) |
+| Wrangler with container build | `wrangler deploy --dry-run` | **Not run**: needs Docker |
+| npm audit (prod deps, root + frontend) | `npm audit --omit=dev --audit-level=high` | 0 vulnerabilities |
+| pip-audit runtime | `pip-audit -r backend/requirements.txt --no-deps` | 3 findings in setuptools (2 advisories), documented exceptions; 0 others |
+| pip-audit dev | same for `requirements-dev.txt` | 0 |
 
----
+### Degraded-mode evidence (local, no OCR engine)
 
-## 2. Adversarial Test Matrix
-
-| # | Test Category | Specific Test Case | Expected Result | Actual Result | Status | Severity | Remediation / Fix Applied |
-|:---|:---|:---|:---|:---|:---:|:---:|:---|
-| **1** | Frontend / Intake | Normal Upload (Aadhaar / Passport) | File preview renders, file metadata displayed | Preview and metadata rendered correctly | **PASS** | Info | Verified in React component |
-| **2** | Frontend / Intake | Empty File Upload (0 bytes) | Client-side rejection with clear warning | Rejected before network transfer: *"Selected file is empty"* | **PASS** | Medium | Client-side size validator added |
-| **3** | Frontend / Intake | Huge File Upload (> 10MB) | Client-side rejection preventing network congestion | Rejected before network transfer: *"Document exceeds 10MB limit"* | **PASS** | High | Client-side check added to `ScreeningPage.jsx` |
-| **4** | Frontend / Intake | Unsupported File Extension (.exe, .pdf, .svg) | Blocked at client and server boundary | Blocked with *"Unsupported format"* alert | **PASS** | High | Client and MIME magic byte checks |
-| **5** | Frontend / UX | Repeated Rapid Clicking | Action debounced; execution button disabled during processing | Button disabled; multi-stage progress displayed | **PASS** | Medium | UI state lock active |
-| **6** | Frontend / UX | Responsive Mobile Layout | Single-column layout; hamburger navigation menu | Adapts cleanly under 640px and 960px breakpoints | **PASS** | Medium | CSS media queries verified |
-| **7** | Frontend / UX | Direct Route Navigation | Navigates cleanly between 6 tabs without state crash | Direct navigation operational via state controller | **PASS** | Low | Verified across all 6 views |
-| **8** | Frontend / API | Backend Unavailable / Offline | Health indicator displays offline; clear retry alert | Offline badge displayed; retry action available | **PASS** | Medium | Graceful error boundary verified |
-| **9** | Security / Upload | 15MB Server-Side Oversized Upload | HTTP 413 / 400 Request Entity Too Large | HTTP 413 returned with clear size limit message | **PASS** | High | Enforced in `validate_image_upload` |
-| **10** | Security / Upload | SVG XML Script Injection (`<script>`) | HTTP 400 rejection; non-image MIME rejected | HTTP 400: *"Invalid file format"* | **PASS** | Critical | Strict magic byte validation |
-| **11** | Security / Upload | HTML Disguised as JPEG (`<html>`) | HTTP 400; magic byte mismatch | HTTP 400: *"Invalid file format"* | **PASS** | Critical | Magic byte header inspection |
-| **12** | Security / Upload | Truncated / Corrupted JPEG Headers | HTTP 400; Pillow decode failure caught | HTTP 400: *"Corrupted or invalid image data"* | **PASS** | High | Image decode verification verified |
-| **13** | Security / Upload | Decompression Bomb (30M Pixels) | Rejection before memory allocation exhaustion | Rejected by `MAX_IMAGE_PIXELS` constraint | **PASS** | Critical | Pillow pixel threshold verified |
-| **14** | Security / Traversal | Path Traversal (`../../../../etc/passwd`) | Filename sanitized to basename without traversal | Traversal stripped -> `etcpasswd` | **PASS** | Critical | `sanitize_filename()` regex |
-| **15** | Security / Traversal | Windows Device Names (`CON.png`, `AUX.png`) | Handled without system device lock | Handled safely in memory | **PASS** | High | `sanitize_filename()` verified |
-| **16** | Security / Traversal | Null Byte Injection (`image.png\x00.exe`) | Null byte stripped | Stripped to `image.png.exe` | **PASS** | Critical | Sanitization regex removes null byte |
-| **17** | Security / Access | Unauthorized Case Retrieval | HTTP 403 Forbidden without session token | HTTP 403 returned | **PASS** | Critical | `X-Session-Token` hash verification |
-| **18** | Security / Access | Tampered Session Token Access | HTTP 403 Forbidden | HTTP 403 returned | **PASS** | Critical | Cryptographic SHA-256 hash check |
-| **19** | Security / Access | Case Brute-Force Probing (`DOC-NONEXISTENT`) | HTTP 404 without internal stack trace leak | HTTP 404 with clean JSON error | **PASS** | High | Anti-enumeration defense |
-| **20** | Security / Auth | Case History Access without Officer Key | HTTP 401 Unauthorized | HTTP 401 returned | **PASS** | Critical | `X-Officer-Key` verification |
-| **21** | Security / Auth | Officer Sign-off without Officer Key | HTTP 401 Unauthorized | HTTP 401 returned | **PASS** | Critical | `verify_officer_token` dependency |
-| **22** | Security / Injection | Malformed JSON in Review Endpoint | HTTP 422 Unprocessable Entity | HTTP 422 returned | **PASS** | Medium | FastAPI / Pydantic schema validation |
-| **23** | Security / Headers | Public Debug Endpoint Access (`/api/debug`) | HTTP 403 or 404 in production environment | HTTP 403 / 404 returned | **PASS** | High | Route disabled by default |
-| **24** | Security / Headers | Anti-Caching Directives | `Cache-Control: no-store, private` | Headers present on all responses | **PASS** | High | Security middleware verified |
-| **25** | CV / Biometrics | No Face Detected in Document or Selfie | Graceful `NOT_APPLICABLE` or `INDETERMINATE` | Returns `NOT_APPLICABLE` without crashing | **PASS** | High | Quality flag `NO_FACE_DETECTED` |
-| **26** | CV / Biometrics | Multiple Faces in Live Selfie ($N > 1$) | Flagged as `MULTIPLE_FACES_DETECTED`, verdict `INDETERMINATE` | Quality flag returned; comparison rejected | **PASS** | High | Quality evaluation logic |
-| **27** | CV / Biometrics | Tiny Face Crop ($< 45\text{px}$) | Flagged as `FACE_TOO_SMALL`, verdict `INDETERMINATE` | Crop rejected as insufficient resolution | **PASS** | High | Dimension threshold verified |
-| **28** | CV / Biometrics | Heavily Blurred Image (Laplacian variance $< 50$) | Evaluated safely without segfault | Processed safely, returns `NOT_APPLICABLE` | **PASS** | Medium | OpenCV filter safety |
-| **29** | CV / Document | Rotated Document (90 / 180 degrees) | Auto-deskew attempts correction; fails to UNKNOWN safely | Document processed safely, marked UNKNOWN | **PASS** | Medium | Deskew & anchor enforcement |
-| **30** | CV / Document | Pitch Black / Zero Contrast Image | Graceful empty OCR without hallucination | Returns empty string, classification UNKNOWN | **PASS** | Medium | OCR fallback pipeline |
-| **31** | CV / Forensics | Extreme JPEG Compression ($Q = 5$) | ELA calculates score without divide-by-zero | ELA score calculated, limitations displayed | **PASS** | Medium | Calibrated ELA bounds |
-| **32** | CV / OCR | Non-Credential Input (Receipt / Recipe) | Document classification remains strictly UNKNOWN | Classified as `UNKNOWN` | **PASS** | High | Multi-token anchor requirement |
-| **33** | CV / OCR | High-Frequency Noise Canvas | Zero fabricated fields or phantom numbers | No phantom fields generated | **PASS** | Critical | Zero hallucination verified |
-| **34** | Reliability | Application Cold Reboot Persistence | Saved cases and reviews survive process restart | Re-instantiated service loaded case and review | **PASS** | Critical | Persistent SQLite storage verified |
-| **35** | Reliability | Missing / Corrupted Watchlist JSON | Service flags registry as UNAVAILABLE without crashing | Returns `status='UNAVAILABLE'`, `evidence_state='UNAVAILABLE'` | **PASS** | High | Fixed `is_loaded` state tracking |
-| **36** | Reliability | Simultaneous Pipeline Service Failure | Risk engine aggregates available evidence without crash | Returns elevated Risk Score ($\ge 50$), HIGH RISK | **PASS** | High | Defensive error handling verified |
-
----
-
-## 3. Performance & Hosting Resource Profile
-
-Profiling executed using [`backend/tests/profile_performance.py`](file:///D:/DocShield/DocShield/backend/tests/profile_performance.py):
+Real request to a local backend (`PERSISTENCE_MODE=none`):
 
 ```
-======================================================================
-  DOCSHIELD PERFORMANCE & RESOURCE CONSUMPTION PROFILE
-======================================================================
-Cold Module Startup Time:           6.920 s
-Base Process Memory (RSS):          490.2 MB
-Peak Memory Under Inference (RSS):  1,261.6 MB (1.26 GB)
-Memory Delta (Model Allocation):    771.4 MB
-
-Verification Pipeline Latencies:
-  - Iteration 1 (Cold Weights):     3,978.4 ms
-  - Iteration 2 (Warm Cache):       1,832.5 ms
-  - Iteration 3 (Warm Cache):       1,878.5 ms
-  - Average Latency:                2,563.1 ms (~2.56 s)
-======================================================================
+aadhaar_valid            MANUAL_REVIEW_RECOMMENDED MEDIUM 30 unavailable=['ocr'] validation=INDETERMINATE ocr_stage=UNAVAILABLE
+aadhaar_invalid_checksum MANUAL_REVIEW_RECOMMENDED MEDIUM 30 unavailable=['ocr'] validation=INDETERMINATE ocr_stage=UNAVAILABLE
+/ready -> 503 (ocr_tesseract=false, ocr_easyocr=false, face_embedding=false)
+/api/docs -> 404 in production mode
 ```
 
-### Minimum Practical Hosting Requirements:
+Before the fix in this change, the same request produced `ESCALATE_FOR_EXPERT_REVIEW / HIGH / 65`
+because an empty OCR result was scored as an Aadhaar checksum failure (finding C4).
 
-| Resource Dimension | Minimum Practical | Recommended Production | Rationale |
-|:---|:---:|:---:|:---|
-| **RAM (Memory)** | **2.2 GB** | **4.0 GB** | EasyOCR (PyTorch), dlib ResNet (128-d), and OpenCV require ~1.26 GB peak RSS during concurrent matrix operations. |
-| **CPU** | **2 vCPUs** | **4 vCPUs** | Bilateral filtering, deskewing, and ResNet forward pass are CPU-bound. 2 vCPUs yield ~1.8s warm inference. |
-| **Concurrency Cap** | **2 Concurrent** | **4 Concurrent** | Protected by `analysis_semaphore = 2` to prevent memory thrashing and CPU starvation. |
-| **Disk Space** | **4.0 GB** | **10.0 GB** | Base Ubuntu/Debian image + Python libraries (PyTorch CPU, OpenCV, dlib) require ~2.8 GB uncompressed. |
-| **Container Base** | Python 3.11-slim | Debian 12 / Ubuntu 22.04 LTS | Pre-compiled dlib and OpenCV wheels avoid long build times. |
+## CI evidence (GitHub Actions, public annotations)
 
----
+| Commit | Job | Result |
+|---|---|---|
+| 29fe048 | Full image (`backend/Dockerfile`, EasyOCR+PyTorch) | built; `/ready` 200; real screening of all 3 samples passed (OCR completed, invalid checksum detected) |
+| a927482 | **Free image under 512 MB / 0.1 CPU** | `/ready` 200 after 20 s; direct call without edge secret → 401; screenings 20.6 / 20.7 / 27.2 s, all 8 stages COMPLETED, no unavailable signals, invalid checksum detected; peak 258 MiB; no OOM |
+| a927482 | Frontend, Worker tests, wrangler dry-runs (free + containers config) | passed |
+| a927482 | Backend tests (Linux + Tesseract), in-image tests | **failed**: `sanitize_filename` kept `....windowswin.ini` for Windows-style traversal on Linux. Fixed in 7707b97. |
+| a927482 | gitleaks | **failed**: placeholder `DOCSHIELD_OFFICER_KEY=replace-with-…` in old commit 72f75745; reviewed, fingerprint-allowlisted in 7707b97 |
 
-## 4. Remediation & Bug Fixes Applied
+Note: the synthetic cartoon faces were reported as `MATCH`. That shows the pipeline runs; it says
+nothing about face-comparison accuracy.
 
-### Fix 1: Mock Database String Path Conversion
-- **Vulnerability**: Passing a string path `MockDatabaseService(data_path="...")` caused `AttributeError: 'str' object has no attribute 'exists'`.
-- **Fix**: Wrapped input in `Path(data_path) if data_path else DATA_FILE` in [`backend/services/mock_database.py`](file:///D:/DocShield/DocShield/backend/services/mock_database.py).
+## Live verification — https://docshield-ss-ec9e.vercel.app (commit bbb3d79, 2026-11-03)
 
-### Fix 2: False "CLEARED" on Missing or Corrupt Watchlist
-- **Vulnerability**: If the watchlist JSON file failed to load, `check_watchlist()` iterated through empty lists and returned `CLEARED` by default.
-- **Fix**: Added `self.is_loaded` tracking. If the database failed to load or is offline, it returns `status="UNAVAILABLE"` and `evidence_state="UNAVAILABLE"`, preventing false negative clearance.
+| Check | Result |
+|---|---|
+| `GET /` | 200 text/html (UI) |
+| `GET /api/ready` | 200 `ready`; ocr_tesseract, face_detector, face_embedding, demo_registry = true; ocr_easyocr = false |
+| `GET /api/nope`, `/assets/missing.js` | 404 JSON (never the HTML page) |
+| `POST /api/analyze-document` (curl, 3 samples + person photo) | 200 each, ~1.3 s, ~85 KB |
+| Malformed upload | 400 "Invalid file format…" |
+| **Browser**: status pill | "Engine ready" from a real `/api/ready` request (127 ms) |
+| **Browser**: Tampered-checksum preset → Run Screening | real `POST /api/analyze-document` (1.27 s); UI showed case DS-20261103-0B6896385368, 8/8 stages COMPLETED, checksum 2/3, "Manual review recommended", score 35, "Case record: not stored", advisory notice |
+| **Browser**: Valid Aadhaar preset → Run Screening | case DS-20261103-04A38BD85594, checksum 3/3, "No adverse indicators", score 0, 816 ms |
+| Browser console | no errors |
 
-### Fix 3: Client-Side Upload Constraints
-- **Vulnerability**: Uploading empty files or massive files (>10MB) resulted in full network transmission before server rejection.
-- **Fix**: Implemented pre-flight client-side size, format, and empty file validation in [`frontend/src/components/ScreeningPage.jsx`](file:///D:/DocShield/DocShield/frontend/src/components/ScreeningPage.jsx).
+Known OCR limitation: the synthetic passport's number `Z2098451` is read as `22098451`, so that
+sample is routed to manual review (also the case with the Debian Tesseract CLI in CI).
 
----
+## Live verification — https://docshield.sivasankar-t1606.workers.dev (Worker version 5c26cd79, commit 29d62cc)
 
-## 5. Final Acceptance Verdict
+| Check | Result |
+|---|---|
+| `GET /api/ready` | 200 `ready`; edge worker ok, **D1 true**, commit 29d62cc; backend ready (Tesseract, face detector, face embedding, registry) |
+| `GET /` / missing asset / unknown API / `/api/cases` | 200 HTML / 404 text / 404 JSON / 401 |
+| `POST /api/analyze-document` (tampered Aadhaar) | 200 in 1.4 s; checksum failure detected; `X-DocShield-Persistence: STORED (cloudflare-d1, redacted, expires +24 h)`; internal record header not exposed |
+| `GET /api/case/<id>` with token / without / wrong token | 200 (name null, number `XXXX-XXXX-6129`, no image) / 404 / 404 |
+| **Browser**: valid Aadhaar preset → Run Screening | "Engine ready" from real `/api/ready`; real `/api/analyze-document` (1.1 s); "No adverse indicators", score 0; **"Case record: stored (redacted) until …"**; no console errors |
 
-The DocShield application has withstood comprehensive adversarial penetration testing, fault injection, and resource profiling. All identified high and medium severity vulnerabilities have been remediated and confirmed resolved across **71 automated unit, integration, and security tests**.
+## Not yet verified
+
+* Concurrent load; reviewer token flow live (no reviewer token has been issued yet).
+* Accuracy of any kind — see PRODUCT_LIMITATIONS.md. Unit tests passing says nothing about accuracy.

@@ -24,12 +24,52 @@ def resolve_weights_dir() -> Path:
 
 WEIGHTS_DIR = resolve_weights_dir()
 
+class _DlibFaceEmbedder:
+    """Minimal stand-in for the face_recognition API used below.
+
+    Uses the same dlib models (5-point landmarks + ResNet descriptor shipped in
+    face_recognition_models) and the same Euclidean distance, so results match
+    face_recognition.face_encodings(..., model="small", num_jitters=1). Used where
+    face_recognition itself cannot be installed alongside a prebuilt dlib wheel.
+    """
+
+    def __init__(self):
+        import dlib
+        import face_recognition_models as frm
+        self._dlib = dlib
+        self._detector = dlib.get_frontal_face_detector()
+        self._pose = dlib.shape_predictor(frm.pose_predictor_five_point_model_location())
+        self._encoder = dlib.face_recognition_model_v1(frm.face_recognition_model_location())
+
+    def face_encodings(self, rgb_image, known_face_locations=None):
+        if known_face_locations is None:
+            rects = self._detector(rgb_image, 1)
+        else:
+            rects = [self._dlib.rectangle(left, top, right, bottom)
+                     for (top, right, bottom, left) in known_face_locations]
+        return [
+            np.array(self._encoder.compute_face_descriptor(rgb_image, self._pose(rgb_image, r), 1))
+            for r in rects
+        ]
+
+    @staticmethod
+    def face_distance(known_encodings, candidate):
+        if len(known_encodings) == 0:
+            return np.empty(0)
+        return np.linalg.norm(np.asarray(known_encodings) - candidate, axis=1)
+
+
 try:
     import face_recognition
     FACE_REC_AVAILABLE = True
 except ImportError:
-    FACE_REC_AVAILABLE = False
-    logger.warning("Biometric face_recognition package is not installed.")
+    try:
+        face_recognition = _DlibFaceEmbedder()
+        FACE_REC_AVAILABLE = True
+        logger.info("face_recognition not installed; using direct dlib embedder (same models).")
+    except Exception as _e:
+        FACE_REC_AVAILABLE = False
+        logger.warning(f"Face embedding unavailable: {type(_e).__name__}")
 
 MIN_FACE_DIMENSION = 45  # Pixels: faces below 45x45 are too small for reliable biometric embedding
 
@@ -114,11 +154,7 @@ class FaceService:
             logger.warning(f"Haar face detection error: {e}")
             return []
 
-    def crop_face_with_quality(self, cv_image: np.ndarray, is_document: bool = False) -> Tuple[Optional[np.ndarray], int, List[str]]:
-        """
-        Detects faces and evaluates quality.
-        Returns: (crop, face_count, quality_flags)
-        """
+    def _locate_and_crop(self, cv_image: np.ndarray, is_document: bool = False) -> Tuple[Optional[np.ndarray], int, List[str], Optional[Tuple[int, int, int, int]]]:
         boxes = self.detect_all_faces(cv_image)
         h, w = cv_image.shape[:2]
         quality_flags = []
@@ -134,7 +170,7 @@ class FaceService:
 
         if face_count == 0:
             quality_flags.append("NO_FACE_DETECTED")
-            return None, 0, quality_flags
+            return None, 0, quality_flags, None
 
         if face_count > 1:
             quality_flags.append("MULTIPLE_FACES_DETECTED")
@@ -146,7 +182,7 @@ class FaceService:
         # Quality check: Resolution
         if w_box < MIN_FACE_DIMENSION or h_box < MIN_FACE_DIMENSION:
             quality_flags.append("FACE_TOO_SMALL")
-            return None, face_count, quality_flags
+            return None, face_count, quality_flags, best_box
 
         # Add margin and crop
         margin_x = int(w_box * 0.15)
@@ -154,10 +190,35 @@ class FaceService:
         box_with_margin = (max(0, x - margin_x), max(0, y - margin_y), w_box + 2 * margin_x, h_box + 2 * margin_y)
         crop = safe_crop(cv_image, box_with_margin)
 
+        return crop, face_count, quality_flags, best_box
+
+    def crop_face_with_quality(self, cv_image: np.ndarray, is_document: bool = False) -> Tuple[Optional[np.ndarray], int, List[str]]:
+        """
+        Detects faces and evaluates quality.
+        Returns: (crop, face_count, quality_flags)
+        """
+        crop, face_count, quality_flags, _ = self._locate_and_crop(cv_image, is_document=is_document)
         return crop, face_count, quality_flags
 
+    @staticmethod
+    def _extract_embedding(full_cv: np.ndarray, crop_cv: np.ndarray, box: Optional[Tuple[int, int, int, int]]):
+        rgb_crop = cv2.cvtColor(crop_cv, cv2.COLOR_BGR2RGB)
+        encs = face_recognition.face_encodings(rgb_crop)
+        if encs:
+            return encs
+        if box is not None:
+            x, y, w_box, h_box = box
+            rgb_full = cv2.cvtColor(full_cv, cv2.COLOR_BGR2RGB)
+            encs = face_recognition.face_encodings(
+                rgb_full,
+                known_face_locations=[(y, x + w_box, y + h_box, x)]
+            )
+            if encs:
+                return encs
+        return []
+
     def verify_faces(self, doc_cv: np.ndarray, person_cv: Optional[np.ndarray]) -> FaceVerificationResult:
-        doc_crop, doc_count, doc_flags = self.crop_face_with_quality(doc_cv, is_document=True)
+        doc_crop, doc_count, doc_flags, doc_box = self._locate_and_crop(doc_cv, is_document=True)
         doc_detected = doc_crop is not None
         doc_crop_b64 = cv2_to_base64(doc_crop) if doc_detected else None
 
@@ -176,7 +237,7 @@ class FaceService:
                 evidence_state="NOT_APPLICABLE"
             )
 
-        person_crop, person_count, person_flags = self.crop_face_with_quality(person_cv, is_document=False)
+        person_crop, person_count, person_flags, person_box = self._locate_and_crop(person_cv, is_document=False)
         person_detected = person_crop is not None
         person_crop_b64 = cv2_to_base64(person_crop) if person_detected else None
 
@@ -250,10 +311,8 @@ class FaceService:
             )
 
         try:
-            rgb_doc = cv2.cvtColor(doc_crop, cv2.COLOR_BGR2RGB)
-            rgb_person = cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB)
-            enc_doc = face_recognition.face_encodings(rgb_doc)
-            enc_person = face_recognition.face_encodings(rgb_person)
+            enc_doc = self._extract_embedding(doc_cv, doc_crop, doc_box)
+            enc_person = self._extract_embedding(person_cv, person_crop, person_box)
 
             if enc_doc and enc_person:
                 dist = float(face_recognition.face_distance([enc_doc[0]], enc_person[0])[0])
@@ -290,7 +349,7 @@ class FaceService:
                     evidence_state="INDETERMINATE"
                 )
         except Exception as e:
-            logger.error(f"Biometric calculation error: {e}")
+            logger.error(f"Biometric calculation error: {type(e).__name__}")
             return FaceVerificationResult(
                 document_face_detected=True,
                 person_face_detected=True,
@@ -301,7 +360,7 @@ class FaceService:
                 quality_flags=combined_quality,
                 document_face_crop_base64=doc_crop_b64,
                 person_face_crop_base64=person_crop_b64,
-                notes=f"Biometric embedding calculation failed: {str(e)}",
+                notes="Face embedding calculation failed; manual comparison required.",
                 evidence_state="INDETERMINATE"
             )
 

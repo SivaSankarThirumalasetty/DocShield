@@ -1,0 +1,232 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    # master runs CI through deploy.yml (workflow_call), so skip the duplicate run here.
+    branches-ignore: [master]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend lint + build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run lint
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: frontend
+
+  worker:
+    name: Worker unit tests + config validation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:worker
+      - name: Build frontend assets for the bundle check
+        run: npm run build
+      - name: Validate wrangler config and Worker bundle (no container build)
+        run: |
+          npx wrangler deploy --dry-run --outdir .wrangler/dry-run
+          npx wrangler deploy --dry-run -c wrangler.containers.jsonc --containers-rollout=none --outdir .wrangler/dry-run-containers
+      - run: npm audit --omit=dev --audit-level=high
+
+  backend:
+    name: Backend tests + API contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Install Tesseract
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng
+      - run: pip install -r backend/requirements-dev.txt
+      - name: Unit, security, upload, auth, persistence and migration tests
+        run: python -m pytest backend/tests -q -rs --tb=short
+      - name: Worker <-> backend API contract test
+        run: |
+          PERSISTENCE_MODE=none DOCSHIELD_ENV=production python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/health && break; sleep 1; done
+          BACKEND_URL=http://127.0.0.1:8000 node --test --test-reporter=spec worker/test/contract.test.mjs
+      - name: Contract test with edge secret enforced
+        run: |
+          EDGE_SHARED_SECRET=ci-edge-secret PERSISTENCE_MODE=none DOCSHIELD_ENV=production python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8001/health && break; sleep 1; done
+          EDGE_SHARED_SECRET=ci-edge-secret BACKEND_URL=http://127.0.0.1:8001 node --test worker/test/contract.test.mjs
+      - name: Dependency vulnerability audit (runtime requirements)
+        # Accepted exceptions (see docs/PRODUCTION_READINESS.md): both setuptools advisories
+        # affect package building/installation on Windows/macOS, not runtime import of
+        # pkg_resources on Linux. setuptools>=81 removed pkg_resources, which
+        # face_recognition_models requires. Remove these ignores when that dependency is replaced.
+        run: >
+          pip-audit -r backend/requirements.txt --no-deps --disable-pip --progress-spinner off
+          --ignore-vuln PYSEC-2026-3447 --ignore-vuln GHSA-xmj3-9gf7-h52w
+
+  container:
+    name: Container image build + full-pipeline tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: backend
+          load: true
+          tags: docshield-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Start container exactly as Cloudflare runs it
+        run: |
+          docker run -d --name ds -p 8000:8000 --memory 6g --cpus 1 \
+            -e PERSISTENCE_MODE=none --network bridge docshield-backend:ci
+          start=$(date +%s)
+          for i in $(seq 1 120); do
+            code=$(curl -s -o /tmp/ready.json -w '%{http_code}' http://127.0.0.1:8000/ready || true)
+            [ "$code" = "200" ] && break; sleep 2
+          done
+          cat /tmp/ready.json; echo
+          echo "cold_start_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$code" = "200"
+      - name: Real screening on synthetic samples
+        run: |
+          for f in aadhaar_valid aadhaar_invalid_checksum passport_sample; do
+            curl -sf -F "document=@sample_data/$f.png" -F "person_image=@sample_data/sample_person.png" \
+              http://127.0.0.1:8000/api/analyze-document -o /tmp/$f.json
+            python3 - "$f" <<'PY'
+          import json, sys
+          name = sys.argv[1]
+          d = json.load(open(f"/tmp/{name}.json"))
+          r = d["risk_assessment"]
+          stages = {s["stage"]: s["status"] for s in d["pipeline"]}
+          print(name, r["verdict"], r["score"], r["unavailable_signals"], stages)
+          assert stages["ocr"] == "COMPLETED", "OCR must run in the production image"
+          assert "ocr" not in r["unavailable_signals"]
+          if name == "aadhaar_invalid_checksum":
+              assert d["validation"]["overall_valid"] is False, "invalid checksum must be detected"
+          PY
+          done
+      - name: Malformed upload returns 400
+        run: |
+          printf 'not an image' > /tmp/bad.png
+          code=$(curl -s -o /dev/null -w '%{http_code}' -F "document=@/tmp/bad.png" http://127.0.0.1:8000/api/analyze-document)
+          test "$code" = "400"
+      - name: Full test suite inside the production image (includes real-OCR e2e)
+        run: |
+          docker exec -u root ds pip install -q pytest==9.2.0 httpx==0.28.1 pytest-github-actions-annotate-failures==0.4.2
+          docker cp backend/tests ds:/app/backend/tests
+          docker cp sample_data ds:/app/sample_data
+          docker exec -u root -w /app -e PERSISTENCE_MODE=sqlite -e PRELOAD_MODELS=false -e GITHUB_ACTIONS=true ds python -m pytest backend/tests -q -rs --tb=short
+      - name: Resource usage
+        if: always()
+        run: |
+          docker stats --no-stream --format 'mem={{.MemUsage}} cpu={{.CPUPerc}}' ds | tee -a "$GITHUB_STEP_SUMMARY"
+          docker image inspect docshield-backend:ci --format 'image_size_bytes={{.Size}}' | tee -a "$GITHUB_STEP_SUMMARY"
+          docker logs ds 2>&1 | tail -40
+
+  free-image:
+    name: Free-tier image under Render limits (512 MB, 0.1 CPU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: backend
+          file: backend/Dockerfile.free
+          load: true
+          tags: docshield-backend:free
+          cache-from: type=gha,scope=free
+          cache-to: type=gha,mode=max,scope=free
+      - name: Start with Render free limits and an edge secret
+        run: |
+          docker run -d --name free -p 8000:10000 --memory 512m --memory-swap 512m --cpus 0.1             -e PORT=10000 -e EDGE_SHARED_SECRET=ci-edge-secret docshield-backend:free
+          start=$(date +%s)
+          for i in $(seq 1 90); do
+            code=$(curl -s -o /tmp/ready.json -w '%{http_code}' -H 'X-DocShield-Edge-Auth: ci-edge-secret' http://127.0.0.1:8000/ready || true)
+            [ "$code" = "200" ] && break; sleep 2
+          done
+          cat /tmp/ready.json; echo
+          echo "::notice::free-image cold start to ready: $(( $(date +%s) - start ))s, ready HTTP $code"
+          test "$code" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/ready)" = "401"
+      - name: Real screenings under the limits (timed)
+        run: |
+          for f in aadhaar_valid aadhaar_invalid_checksum passport_sample; do
+            start=$(date +%s%N)
+            code=$(curl -s -o /tmp/$f.json -w '%{http_code}' --max-time 280 -H 'X-DocShield-Edge-Auth: ci-edge-secret'               -D /tmp/$f.headers -F "document=@sample_data/$f.png" -F "person_image=@sample_data/sample_person.png"               http://127.0.0.1:8000/api/analyze-document)
+            ms=$(( ($(date +%s%N) - start) / 1000000 ))
+            mem=$(docker stats --no-stream --format '{{.MemUsage}}' free)
+            python3 - "$f" "$code" "$ms" "$mem" <<'PY'
+          import json, sys
+          name, code, ms, mem = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+          if code != "200":
+              print(f"::error::{name}: HTTP {code} after {ms} ms (mem {mem}): {open(f'/tmp/{name}.json').read()[:300]}")
+              sys.exit(1)
+          d = json.load(open(f"/tmp/{name}.json"))
+          r = d["risk_assessment"]
+          stages = {s["stage"]: s["status"] for s in d["pipeline"]}
+          print(f"::notice::{name}: {ms} ms, mem {mem}, verdict {r['verdict']} score {r['score']}, unavailable {r['unavailable_signals']}, stages {stages}, face {d['face_verification']['match_verdict']}")
+          assert stages["ocr"] == "COMPLETED", stages
+          assert "X-DocShield-Case-Record".lower() in open(f"/tmp/{name}.headers").read().lower()
+          if name == "aadhaar_invalid_checksum":
+              assert d["validation"]["overall_valid"] is False, "invalid checksum must be detected"
+          PY
+          done
+      - name: Container log tail and OOM check
+        if: always()
+        run: |
+          docker inspect free --format 'oom_killed={{.State.OOMKilled}} restarts={{.RestartCount}} status={{.State.Status}}'
+          echo "::notice::free-image final $(docker stats --no-stream --format 'mem={{.MemUsage}} cpu={{.CPUPerc}}' free) $(docker inspect free --format 'oom_killed={{.State.OOMKilled}}') image=$(docker image inspect docshield-backend:free --format '{{.Size}}')B"
+          docker logs free 2>&1 | tail -30
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: gitleaks (full history)
+        run: |
+          set +e
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 detect --source /repo --redact --no-banner             --report-format json --report-path /repo/gitleaks.json
+          code=$?
+          # Publish findings as (redacted) annotations so they are visible without log access.
+          python3 - <<'PY'
+          import json, os
+          if os.path.exists("gitleaks.json"):
+              for f in json.load(open("gitleaks.json")):
+                  print(f"::error file={f['File']},line={f['StartLine']}::gitleaks {f['RuleID']} in commit {f['Commit'][:8]} (secret redacted)")
+          PY
+          exit $code
