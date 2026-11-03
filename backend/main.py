@@ -1,17 +1,30 @@
 import hmac
+import os
 import time
 import uuid
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .core.config import settings
 from .core.logging import logger
 from .api.routes import router, readiness_checks, APP_VERSION
 from .services.ocr_service import ocr_service
+
+# Built frontend served by this process only when deployed as a single app (Vercel).
+# Elsewhere (Cloudflare Worker, local Vite) the frontend is served separately.
+FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", str(Path(__file__).resolve().parent.parent / "public")))
+
+HTML_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; "
+    "media-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+)
 
 # Multipart framing overhead allowed on top of two maximum-size images.
 MAX_REQUEST_BYTES = settings.max_upload_size_bytes * 2 + 64 * 1024
@@ -74,11 +87,23 @@ class RequestGuardMiddleware(BaseHTTPMiddleware):
         logger.info(f"request_id={request_id} method={request.method} path={request.url.path} status={response.status_code} ms={elapsed}")
 
         response.headers["X-Request-ID"] = request_id
-        response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        path = request.url.path
+        if response.status_code == 200 and path.startswith("/assets/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif response.status_code == 200 and path.startswith("/samples/"):
+            response.headers["Cache-Control"] = "public, max-age=86400"
+        else:
+            response.headers["Cache-Control"] = "no-store"
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Content-Security-Policy"] = HTML_CSP
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+            response.headers["Permissions-Policy"] = "camera=(self), microphone=(), geolocation=()"
+        else:
+            response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+            response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
 
@@ -105,3 +130,8 @@ async def safe_exception_handler(request: Request, exc: Exception):
 
 
 app.include_router(router)
+
+# Mounted last so every API route above takes precedence. html=True serves index.html for
+# "/" only; there is no SPA catch-all, so unknown /api paths still return a JSON 404.
+if (FRONTEND_DIR / "index.html").exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

@@ -127,7 +127,10 @@ async def api_health_check():
         system_notes=[
             f"Mode: {settings.operating_mode}. Advisory prototype; not a government verification service.",
             "Registry checks use a SIMULATED 7-record DEMO dataset.",
-            f"Case persistence: {'local SQLite' if storage_service is not None else 'handled by the Cloudflare Worker (D1)'}.",
+            "Case persistence: " + (
+                "local SQLite (redacted)." if storage_service is not None
+                else "none in this service (results are not stored unless an edge layer such as the Cloudflare Worker stores a redacted record)."
+            ),
         ]
     )
 

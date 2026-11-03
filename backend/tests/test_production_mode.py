@@ -165,3 +165,29 @@ def test_ready_requires_override():
     res = _run_in_fresh_process(READY_PROBE, PERSISTENCE_MODE="none", READY_REQUIRES="demo_registry,face_detector")
     assert res["body"]["required"] == ["demo_registry", "face_detector"]
     assert res["status"] == 200
+
+
+STATIC_PROBE = r"""
+import json, pathlib, tempfile, os
+d = pathlib.Path(tempfile.mkdtemp())
+(d / "assets").mkdir()
+(d / "index.html").write_text("<!doctype html><div id=root></div>")
+(d / "assets" / "app.js").write_text("console.log(1)")
+os.environ["FRONTEND_DIR"] = str(d)
+from fastapi.testclient import TestClient
+from backend.main import app
+c = TestClient(app)
+r = {p: c.get(p) for p in ["/", "/assets/app.js", "/assets/missing.js", "/api/nope", "/api/ready"]}
+print(json.dumps({p: [x.status_code, x.headers.get("content-type", "").split(";")[0],
+                      x.headers.get("cache-control"), x.headers.get("content-security-policy", "")[:18]]
+                  for p, x in r.items()}))
+"""
+
+
+def test_single_app_static_serving_never_shadows_api():
+    res = _run_in_fresh_process(STATIC_PROBE, PERSISTENCE_MODE="none")
+    assert res["/"][:2] == [200, "text/html"] and res["/"][3].startswith("default-src 'self'")
+    assert res["/assets/app.js"][2] == "public, max-age=31536000, immutable"
+    assert res["/assets/missing.js"][0] == 404 and res["/assets/missing.js"][2] == "no-store"
+    assert res["/api/nope"][:2] == [404, "application/json"]
+    assert res["/api/ready"][1] == "application/json"
