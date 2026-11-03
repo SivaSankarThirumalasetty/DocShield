@@ -18,7 +18,7 @@ from .services.ocr_service import ocr_service
 
 # Built frontend served by this process only when deployed as a single app (Vercel).
 # Elsewhere (Cloudflare Worker, local Vite) the frontend is served separately.
-FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", str(Path(__file__).resolve().parent.parent / "public")))
+FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", str(Path(__file__).resolve().parent.parent / "webui")))
 
 HTML_CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "

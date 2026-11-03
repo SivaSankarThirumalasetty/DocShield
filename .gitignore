@@ -63,6 +63,6 @@ uploads/
 backend/tests/evaluation_report.json
 backend/tests/performance_report.json
 backend/tessdata/
-public/
+webui/
 DEPLOY_SHA
 .vercel/

@@ -22,5 +22,5 @@ echo "$TESSDATA_SHA256  backend/tessdata/eng.traineddata" | sha256sum -c -
 # Frontend: Vercel Functions accept request bodies up to 4.5 MB.
 npm --prefix frontend ci --no-audit --no-fund
 VITE_MAX_UPLOAD_TOTAL_MB=4.3 npm --prefix frontend run build
-rm -rf public && cp -r frontend/dist public
-echo "Build complete: $(ls public | tr '\n' ' ')"
+rm -rf webui && cp -r frontend/dist webui
+echo "Build complete: $(ls webui | tr '\n' ' ')"
