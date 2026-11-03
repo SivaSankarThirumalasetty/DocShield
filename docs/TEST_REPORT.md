@@ -70,7 +70,17 @@ nothing about face-comparison accuracy.
 Known OCR limitation: the synthetic passport's number `Z2098451` is read as `22098451`, so that
 sample is routed to manual review (also the case with the Debian Tesseract CLI in CI).
 
+## Live verification — https://docshield.sivasankar-t1606.workers.dev (Worker version 5c26cd79, commit 29d62cc)
+
+| Check | Result |
+|---|---|
+| `GET /api/ready` | 200 `ready`; edge worker ok, **D1 true**, commit 29d62cc; backend ready (Tesseract, face detector, face embedding, registry) |
+| `GET /` / missing asset / unknown API / `/api/cases` | 200 HTML / 404 text / 404 JSON / 401 |
+| `POST /api/analyze-document` (tampered Aadhaar) | 200 in 1.4 s; checksum failure detected; `X-DocShield-Persistence: STORED (cloudflare-d1, redacted, expires +24 h)`; internal record header not exposed |
+| `GET /api/case/<id>` with token / without / wrong token | 200 (name null, number `XXXX-XXXX-6129`, no image) / 404 / 404 |
+| **Browser**: valid Aadhaar preset → Run Screening | "Engine ready" from real `/api/ready`; real `/api/analyze-document` (1.1 s); "No adverse indicators", score 0; **"Case record: stored (redacted) until …"**; no console errors |
+
 ## Not yet verified
 
-* Cloudflare Worker + D1 / Render path live; concurrent load on Vercel.
+* Concurrent load; reviewer token flow live (no reviewer token has been issued yet).
 * Accuracy of any kind — see PRODUCT_LIMITATIONS.md. Unit tests passing says nothing about accuracy.

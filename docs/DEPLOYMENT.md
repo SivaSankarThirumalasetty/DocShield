@@ -1,5 +1,24 @@
 # Deployment (₹0 / free tiers)
 
+## Live architecture (2026-11-03)
+
+```
+Browser → https://docshield.sivasankar-t1606.workers.dev   (Cloudflare Workers Free: UI, /api routing,
+            │                                                rate limits, D1 redacted cases, reviewer tokens)
+            └── HTTPS ──→ https://docshield-ss-ec9e.vercel.app   (Vercel Hobby: FastAPI screening backend)
+```
+
+* **Primary URL:** `docshield.sivasankar-t1606.workers.dev` — full feature set (cases stored 24 h, reviewer console).
+* `docshield-ss-ec9e.vercel.app` also serves the UI directly but without the Worker: no case storage,
+  no reviewer features, only the backend's per-instance rate limit.
+* Worker deployed with `npx wrangler deploy --var BACKEND_URL:https://docshield-ss-ec9e.vercel.app --var GIT_COMMIT:<sha>`
+  after `VITE_MAX_UPLOAD_TOTAL_MB=4.3 npm --prefix frontend run build` (Vercel's 4.5 MB body limit).
+* Worker secret `EDGE_SHARED_SECRET` is set, but the Vercel backend does **not** enforce it yet, because doing so
+  would disable the direct Vercel UI. To make the Worker the only entry point, set the same value as
+  `EDGE_SHARED_SECRET` in the Vercel project env and redeploy (rotate it: `npx wrangler secret put EDGE_SHARED_SECRET`).
+* Obsolete Worker secret `BACKEND_ORIGIN` (old tunnel) still exists and is unused; remove with
+  `npx wrangler secret delete BACKEND_ORIGIN` once you no longer need it.
+
 ## Live now: Vercel Hobby (free) — single app
 
 **https://docshield-ss-ec9e.vercel.app** — Vercel project `docshield` (`prj_Kg2lpIVHR2aRSTQw7HUjBN0WfV86`),
